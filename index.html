@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Illinois State Police FOIA Command Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="top-header">
+      <div class="header-left">
+        <div class="header-logo" aria-hidden="true">
+          <img src="images/isp-logo.png" alt="" class="header-logo-image">
+        </div>
+      </div>
+
+      <div class="header-center brand-copy">
+        <p class="eyebrow">Illinois State Police</p>
+        <h1>FOIA Command Dashboard</h1>
+        <p class="subhead">Executive Operations Overview</p>
+      </div>
+
+      <div class="header-right">
+        <div class="header-buttons-col">
+          <div class="header-actions">
+            <button id="darkModeToggle" class="btn" type="button" aria-label="Toggle dark mode">Dark Mode</button>
+            <button id="presentationToggle" class="btn btn-accent" type="button" aria-label="Toggle presentation mode">Presentation Mode</button>
+          </div>
+        </div>
+
+        <div class="header-logo-col">
+          <div class="header-logo" aria-hidden="true">
+            <img src="images/isp-logo.png" alt="" class="header-logo-image">
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main class="dashboard-grid">
+      <section class="main-content">
+        <section class="kpi-grid" aria-label="Key performance indicators">
+          <article class="kpi-card">
+            <h2>Total Open FOIAs</h2>
+            <p id="kpiTotalOpen" class="kpi-value">0</p>
+          </article>
+          <article class="kpi-card">
+            <h2>Due in 10 Days</h2>
+            <p id="kpiDue10" class="kpi-value">0</p>
+          </article>
+          <article class="kpi-card">
+            <h2>Due in 5 Days</h2>
+            <p id="kpiDue5" class="kpi-value">0</p>
+          </article>
+          <article class="kpi-card">
+            <h2>Due Today</h2>
+            <p id="kpiDueToday" class="kpi-value">0</p>
+          </article>
+          <article class="kpi-card kpi-alert">
+            <h2>Overdue</h2>
+            <p id="kpiOverdue" class="kpi-value">0</p>
+          </article>
+          <article class="kpi-card">
+            <h2>Average Days Open</h2>
+            <p id="kpiAvgDaysOpen" class="kpi-value">0</p>
+          </article>
+          <article class="kpi-card">
+            <h2>Closed This Month</h2>
+            <p id="kpiClosedThisMonth" class="kpi-value">0</p>
+          </article>
+          <article class="kpi-card">
+            <h2>Requests by Division</h2>
+            <div id="kpiRequestsByDivision" class="division-summary"></div>
+          </article>
+        </section>
+
+        <section class="operations-grid">
+          <article class="panel chart-panel">
+            <div class="panel-header">
+              <h2>Division Workload</h2>
+            </div>
+            <ul id="divisionChartBars" class="chart-list" aria-label="Open requests by division chart"></ul>
+          </article>
+
+          <article class="panel deadlines-panel">
+            <div class="panel-header">
+              <h2>Upcoming Deadlines</h2>
+            </div>
+            <ul id="upcomingDeadlines" class="deadline-list" aria-label="Upcoming deadlines"></ul>
+          </article>
+
+          <article class="panel alerts-panel">
+            <div class="panel-header">
+              <h2>Command Alerts</h2>
+            </div>
+            <ul id="commandAlerts" class="alerts-list" aria-label="Command alerts"></ul>
+          </article>
+        </section>
+
+        <section class="panel request-panel">
+          <div class="panel-header panel-header-stacked">
+            <h2>FOIA Requests</h2>
+            <label class="search-box" for="searchInput">
+              <span>Search</span>
+              <input id="searchInput" type="search" placeholder="Search by ID, requester, subject, division, or status" autocomplete="off">
+            </label>
+          </div>
+          <div class="table-wrap foia-table-wrap">
+            <table aria-label="FOIA request table">
+              <thead>
+                <tr>
+                  <th>Request ID</th>
+                  <th>Division</th>
+                  <th>Requester</th>
+                  <th>Subject</th>
+                  <th>Received</th>
+                  <th>Due</th>
+                  <th>Status</th>
+                  <th>Assigned To</th>
+                </tr>
+              </thead>
+              <tbody id="foiaTableBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <aside class="detail-panel panel" aria-live="polite">
+        <div class="panel-header">
+          <h2>Request Details</h2>
+        </div>
+        <div id="detailContent" class="detail-content">
+          <p class="placeholder">Select a FOIA request to view detailed information.</p>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
