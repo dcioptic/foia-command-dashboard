@@ -14,14 +14,14 @@
     <header class="top-header">
       <div class="header-left">
         <div class="header-logo" aria-hidden="true">
-          <img src="images/isp-logo.png" alt="" class="header-logo-image">
+          <img src="images/ispdci-logo.png" alt="" class="header-logo-image">
         </div>
       </div>
 
       <div class="header-center brand-copy">
         <p class="eyebrow">Illinois State Police</p>
         <h1>FOIA Command Dashboard</h1>
-        <p class="subhead">Executive Operations Overview</p>
+        <p class="subhead">Division of Criminal Investigation</p>
       </div>
 
       <div class="header-right">
@@ -34,7 +34,7 @@
 
         <div class="header-logo-col">
           <div class="header-logo" aria-hidden="true">
-            <img src="images/isp-logo.png" alt="" class="header-logo-image">
+            <img src="images/ispdci-logo.png" alt="" class="header-logo-image">
           </div>
         </div>
       </div>
@@ -42,6 +42,18 @@
 
     <main class="dashboard-grid">
       <section class="main-content">
+        <section class="panel filter-panel" aria-label="Dashboard filters">
+          <div class="panel-header panel-header-filters">
+            <h2>Filters</h2>
+            <label class="filter-control" for="workUnitFilter">
+              <span>DCI Work Unit</span>
+              <select id="workUnitFilter" aria-label="Filter by DCI Work Unit">
+                <option value="ALL">All DCI Work Units</option>
+              </select>
+            </label>
+          </div>
+        </section>
+
         <section class="kpi-grid" aria-label="Key performance indicators">
           <article class="kpi-card">
             <h2>Total Open FOIAs</h2>
@@ -72,17 +84,31 @@
             <p id="kpiClosedThisMonth" class="kpi-value">0</p>
           </article>
           <article class="kpi-card">
-            <h2>Requests by Division</h2>
-            <div id="kpiRequestsByDivision" class="division-summary"></div>
+            <h2>Open Work Units</h2>
+            <p id="kpiOpenWorkUnits" class="kpi-value">0</p>
           </article>
         </section>
 
         <section class="operations-grid">
           <article class="panel chart-panel">
             <div class="panel-header">
-              <h2>Division Workload</h2>
+              <h2>DCI Work Unit Summary</h2>
             </div>
-            <ul id="divisionChartBars" class="chart-list" aria-label="Open requests by division chart"></ul>
+            <div class="table-wrap summary-table-wrap">
+              <table aria-label="DCI Work Unit workload summary">
+                <thead>
+                  <tr>
+                    <th>DCI Work Unit</th>
+                    <th>Open</th>
+                    <th>Due in 10</th>
+                    <th>Due in 5</th>
+                    <th>Due Today</th>
+                    <th>Overdue</th>
+                  </tr>
+                </thead>
+                <tbody id="workUnitSummaryBody"></tbody>
+              </table>
+            </div>
           </article>
 
           <article class="panel deadlines-panel">
@@ -105,21 +131,21 @@
             <h2>FOIA Requests</h2>
             <label class="search-box" for="searchInput">
               <span>Search</span>
-              <input id="searchInput" type="search" placeholder="Search by ID, requester, subject, division, or status" autocomplete="off">
+              <input id="searchInput" type="search" placeholder="Search by FOIA number, requester, subject, DCI work unit, or status" autocomplete="off">
             </label>
           </div>
           <div class="table-wrap foia-table-wrap">
             <table aria-label="FOIA request table">
               <thead>
                 <tr>
-                  <th>Request ID</th>
-                  <th>Division</th>
-                  <th>Requester</th>
+                  <th>FOIA Number</th>
                   <th>Subject</th>
-                  <th>Received</th>
-                  <th>Due</th>
+                  <th>Requester</th>
+                  <th>DCI Work Unit</th>
                   <th>Status</th>
-                  <th>Assigned To</th>
+                  <th>Days Open</th>
+                  <th>Due Date</th>
+                  <th>Days Remaining</th>
                 </tr>
               </thead>
               <tbody id="foiaTableBody"></tbody>

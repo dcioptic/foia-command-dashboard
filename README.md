@@ -23,8 +23,9 @@ No SharePoint or Microsoft Lists integration is included yet.
 	- Overdue
 	- Average Days Open
 	- Closed This Month
-	- Requests by Division
-- Division workload table (DCI, DJS, DOP, DII, DFS)
+	- Open Work Units
+- DCI Work Unit filter with "All DCI Work Units"
+- DCI Work Unit summary with open and deadline buckets
 - Upcoming deadlines panel
 - Searchable FOIA request table
 - Right-side detail panel for selected request
@@ -47,12 +48,12 @@ Then open:
 
 ## Data Notes
 
-- Division values are constrained to: `DCI`, `DJS`, `DOP`, `DII`, `DFS`
+- All records are DCI-only and use `dci_work_unit`
 - `status` supports `Open`, `In Review`, and `Closed`
 - `closed_date` is set for closed requests
 
 ## Next Steps
 
-- Add filters (division, status, assigned analyst)
+- Add additional filters (status, assigned analyst)
 - Add CSV export
 - Integrate with SharePoint or Microsoft Lists when data model is finalized

@@ -1,9 +1,50 @@
-const DIVISIONS = ["DCI", "DJS", "DOP", "DII", "DFS"];
+const DCI_WORK_UNITS = [
+  "Zone 1 East",
+  "Zone 1 West",
+  "Zone 2",
+  "Zone 2 SLANT",
+  "Zone 2 QCMEG",
+  "Zone 2 BATF",
+  "Zone 2 RIITF",
+  "Zone 4",
+  "Zone 4 CIFG",
+  "Zone 4 WCITF Macomb",
+  "Zone 4 WCITF Quincy",
+  "Zone 4 PMEG",
+  "Zone 5",
+  "Zone 5 TF6",
+  "Zone 5 VMEG",
+  "Zone 5 ECITF",
+  "Zone 6",
+  "Zone 6 PSEG",
+  "Zone 6 SCIDTF",
+  "Zone 6 MEGSI",
+  "Zone 7",
+  "Zone 7 SIEG",
+  "Zone 7 SIDTF",
+  "Zone 8",
+  "Zone 8 SEIDTF",
+  "SIU",
+  "STIC",
+  "Digital Crime Unit",
+  "JTTF",
+  "SOCOM",
+  "Air Operations",
+  "Statewide Gaming",
+  "DDO",
+  "ISC",
+  "DDO FOIA Unit"
+];
+
+const ALL_WORK_UNITS_OPTION = "ALL";
 
 const state = {
   records: [],
+  scopedRecords: [],
   filteredRecords: [],
-  selectedId: null
+  selectedId: null,
+  selectedWorkUnit: ALL_WORK_UNITS_OPTION,
+  searchQuery: ""
 };
 
 const elements = {
@@ -14,13 +55,14 @@ const elements = {
   kpiOverdue: document.getElementById("kpiOverdue"),
   kpiAvgDaysOpen: document.getElementById("kpiAvgDaysOpen"),
   kpiClosedThisMonth: document.getElementById("kpiClosedThisMonth"),
-  kpiRequestsByDivision: document.getElementById("kpiRequestsByDivision"),
-  divisionChartBars: document.getElementById("divisionChartBars"),
+  kpiOpenWorkUnits: document.getElementById("kpiOpenWorkUnits"),
+  workUnitSummaryBody: document.getElementById("workUnitSummaryBody"),
   upcomingDeadlines: document.getElementById("upcomingDeadlines"),
   commandAlerts: document.getElementById("commandAlerts"),
   foiaTableBody: document.getElementById("foiaTableBody"),
   detailContent: document.getElementById("detailContent"),
   searchInput: document.getElementById("searchInput"),
+  workUnitFilter: document.getElementById("workUnitFilter"),
   darkModeToggle: document.getElementById("darkModeToggle"),
   presentationToggle: document.getElementById("presentationToggle")
 };
@@ -32,12 +74,19 @@ initialize();
 async function initialize() {
   attachEventListeners();
   await loadData();
-  applySearch("");
+  populateWorkUnitFilter();
+  applyFilters();
 }
 
 function attachEventListeners() {
   elements.searchInput.addEventListener("input", (event) => {
-    applySearch(event.target.value);
+    state.searchQuery = event.target.value;
+    applyFilters();
+  });
+
+  elements.workUnitFilter.addEventListener("change", (event) => {
+    state.selectedWorkUnit = event.target.value;
+    applyFilters();
   });
 
   elements.darkModeToggle.addEventListener("click", () => {
@@ -66,15 +115,30 @@ async function loadData() {
 
     state.records = rawRecords
       .map((record) => normalizeRecord(record))
-      .filter((record) => DIVISIONS.includes(record.division));
+      .filter((record) => DCI_WORK_UNITS.includes(record.dci_work_unit));
   } catch (error) {
     elements.foiaTableBody.innerHTML = `<tr><td colspan="8">Failed to load FOIA data: ${escapeHtml(error.message)}</td></tr>`;
   }
 }
 
-function applySearch(query) {
-  const normalizedQuery = query.trim().toLowerCase();
-  state.filteredRecords = state.records.filter((record) => {
+function populateWorkUnitFilter() {
+  elements.workUnitFilter.innerHTML = [
+    `<option value="${ALL_WORK_UNITS_OPTION}">All DCI Work Units</option>`,
+    ...DCI_WORK_UNITS.map((workUnit) => `<option value="${escapeHtml(workUnit)}">${escapeHtml(workUnit)}</option>`)
+  ].join("");
+}
+
+function applyFilters() {
+  const normalizedQuery = state.searchQuery.trim().toLowerCase();
+
+  state.scopedRecords = state.records.filter((record) => {
+    if (state.selectedWorkUnit === ALL_WORK_UNITS_OPTION) {
+      return true;
+    }
+    return record.dci_work_unit === state.selectedWorkUnit;
+  });
+
+  state.filteredRecords = state.scopedRecords.filter((record) => {
     if (!normalizedQuery) {
       return true;
     }
@@ -83,9 +147,10 @@ function applySearch(query) {
       record.request_id,
       record.requester,
       record.subject,
-      record.division,
+      record.dci_work_unit,
       record.status,
-      record.assigned_to
+      record.assigned_to,
+      record.notes
     ].join(" ").toLowerCase();
 
     return searchable.includes(normalizedQuery);
@@ -100,7 +165,7 @@ function applySearch(query) {
 
 function renderAll() {
   renderKpis();
-  renderDivisionWorkloadChart();
+  renderWorkUnitSummary();
   renderUpcomingDeadlines();
   renderCommandAlerts();
   renderRequestTable();
@@ -108,7 +173,7 @@ function renderAll() {
 }
 
 function renderKpis() {
-  const openRecords = state.records.filter((record) => isOpenStatus(record.status));
+  const openRecords = state.scopedRecords.filter((record) => isOpenStatus(record.status));
   const due10 = openRecords.filter((record) => daysUntil(record.due_date) <= 10 && daysUntil(record.due_date) >= 0);
   const due5 = openRecords.filter((record) => daysUntil(record.due_date) <= 5 && daysUntil(record.due_date) >= 0);
   const dueToday = openRecords.filter((record) => daysUntil(record.due_date) === 0);
@@ -118,14 +183,14 @@ function renderKpis() {
   const avgDaysOpen = openRecords.length ? Math.round(totalOpenDays / openRecords.length) : 0;
 
   const now = new Date();
-  const closedThisMonth = state.records.filter((record) => {
+  const closedThisMonth = state.scopedRecords.filter((record) => {
     if (!record.closed_date) {
       return false;
     }
     return record.closed_date.getMonth() === now.getMonth() && record.closed_date.getFullYear() === now.getFullYear();
   });
 
-  const divisionCounts = getDivisionCounts(openRecords);
+  const openWorkUnits = new Set(openRecords.map((record) => record.dci_work_unit));
 
   elements.kpiTotalOpen.textContent = String(openRecords.length);
   elements.kpiDue10.textContent = String(due10.length);
@@ -134,36 +199,59 @@ function renderKpis() {
   elements.kpiOverdue.textContent = String(overdue.length);
   elements.kpiAvgDaysOpen.textContent = String(avgDaysOpen);
   elements.kpiClosedThisMonth.textContent = String(closedThisMonth.length);
-
-  elements.kpiRequestsByDivision.innerHTML = DIVISIONS
-    .map((division) => `<span>${division}: <strong>${divisionCounts[division] ?? 0}</strong></span>`)
-    .join("");
+  elements.kpiOpenWorkUnits.textContent = String(openWorkUnits.size);
 }
 
-function renderDivisionWorkloadChart() {
-  const openByDivision = DIVISIONS.map((division) => {
-    const openCount = state.records.filter((record) => record.division === division && isOpenStatus(record.status)).length;
-    return { division, openCount };
-  });
+function renderWorkUnitSummary() {
+  const unitsToRender = state.selectedWorkUnit === ALL_WORK_UNITS_OPTION
+    ? DCI_WORK_UNITS
+    : [state.selectedWorkUnit];
 
-  const maxCount = Math.max(...openByDivision.map((item) => item.openCount), 1);
+  const rows = unitsToRender
+    .map((workUnit) => {
+      const unitRecords = state.scopedRecords.filter((record) => record.dci_work_unit === workUnit);
+      const openRecords = unitRecords.filter((record) => isOpenStatus(record.status));
+      const due10 = openRecords.filter((record) => {
+        const delta = daysUntil(record.due_date);
+        return delta >= 0 && delta <= 10;
+      }).length;
+      const due5 = openRecords.filter((record) => {
+        const delta = daysUntil(record.due_date);
+        return delta >= 0 && delta <= 5;
+      }).length;
+      const dueToday = openRecords.filter((record) => daysUntil(record.due_date) === 0).length;
+      const overdue = openRecords.filter((record) => daysUntil(record.due_date) < 0).length;
 
-  elements.divisionChartBars.innerHTML = openByDivision.map((item) => {
-    const percent = Math.round((item.openCount / maxCount) * 100);
-    return `
-      <li class="chart-row">
-        <span class="chart-label">${item.division}</span>
-        <div class="chart-track" role="img" aria-label="${item.division} has ${item.openCount} open requests">
-          <div class="chart-bar" style="width: ${percent}%"></div>
-        </div>
-        <span class="chart-value">${item.openCount}</span>
-      </li>
-    `;
-  }).join("");
+      return {
+        workUnit,
+        open: openRecords.length,
+        due10,
+        due5,
+        dueToday,
+        overdue
+      };
+    })
+    .sort((a, b) => b.open - a.open || a.workUnit.localeCompare(b.workUnit));
+
+  if (!rows.length) {
+    elements.workUnitSummaryBody.innerHTML = "<tr><td colspan=\"6\">No DCI work unit workload data available.</td></tr>";
+    return;
+  }
+
+  elements.workUnitSummaryBody.innerHTML = rows.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.workUnit)}</td>
+      <td>${item.open}</td>
+      <td>${item.due10}</td>
+      <td>${item.due5}</td>
+      <td>${item.dueToday}</td>
+      <td>${item.overdue}</td>
+    </tr>
+  `).join("");
 }
 
 function renderCommandAlerts() {
-  const openRecords = state.records.filter((record) => isOpenStatus(record.status));
+  const openRecords = state.scopedRecords.filter((record) => isOpenStatus(record.status));
   const overdueRecords = openRecords
     .map((record) => ({ ...record, delta: daysUntil(record.due_date) }))
     .filter((record) => record.delta < 0)
@@ -179,12 +267,12 @@ function renderCommandAlerts() {
 
   const overduePreview = overdueRecords
     .slice(0, 2)
-    .map((record) => `${record.request_id} (${Math.abs(record.delta)}d overdue)`)
+    .map((record) => `${record.request_id} - ${record.dci_work_unit} (${Math.abs(record.delta)}d overdue)`)
     .join(" | ");
 
   const upcomingPreview = upcomingFiveDays
     .slice(0, 2)
-    .map((record) => `${record.request_id} (${record.delta}d)`)
+    .map((record) => `${record.request_id} - ${record.dci_work_unit} (${record.delta}d)`)
     .join(" | ");
 
   elements.commandAlerts.innerHTML = `
@@ -207,14 +295,13 @@ function renderCommandAlerts() {
 }
 
 function renderUpcomingDeadlines() {
-  const upcoming = state.records
+  const upcoming = state.scopedRecords
     .filter((record) => isOpenStatus(record.status))
     .map((record) => ({
       ...record,
       dueInDays: daysUntil(record.due_date)
     }))
-    .sort((a, b) => a.dueInDays - b.dueInDays)
-    .slice(0, 8);
+    .sort((a, b) => a.dueInDays - b.dueInDays);
 
   if (!upcoming.length) {
     elements.upcomingDeadlines.innerHTML = "<li class=\"placeholder\">No upcoming open deadlines.</li>";
@@ -225,7 +312,7 @@ function renderUpcomingDeadlines() {
     const timing = formatDueIn(record.dueInDays);
     return `
       <li class="deadline-item">
-        <strong>${escapeHtml(record.request_id)} - ${escapeHtml(record.division)}</strong>
+        <strong>${escapeHtml(record.request_id)} - ${escapeHtml(record.dci_work_unit)}</strong>
         <span>${escapeHtml(record.subject)}</span>
         <div class="deadline-meta">
           <span>Due ${formatDate(record.due_date)}</span>
@@ -248,13 +335,13 @@ function renderRequestTable() {
     return `
       <tr data-request-id="${escapeHtml(record.request_id)}" class="${selectedClass}" tabindex="0">
         <td>${escapeHtml(record.request_id)}</td>
-        <td>${escapeHtml(record.division)}</td>
-        <td>${escapeHtml(record.requester)}</td>
         <td>${escapeHtml(record.subject)}</td>
-        <td>${formatDate(record.received_date)}</td>
-        <td>${formatDate(record.due_date)}</td>
+        <td>${escapeHtml(record.requester)}</td>
+        <td>${escapeHtml(record.dci_work_unit)}</td>
         <td><span class="status-chip ${statusClass}">${escapeHtml(record.status)}</span></td>
-        <td>${escapeHtml(record.assigned_to)}</td>
+        <td>${daysBetween(record.received_date, today)}</td>
+        <td>${formatDate(record.due_date)}</td>
+        <td>${escapeHtml(formatDueInShort(daysUntil(record.due_date)))}</td>
       </tr>
     `;
   }).join("");
@@ -277,7 +364,7 @@ function renderRequestTable() {
 }
 
 function renderDetailPanel() {
-  const selected = state.records.find((record) => record.request_id === state.selectedId);
+  const selected = state.scopedRecords.find((record) => record.request_id === state.selectedId);
 
   if (!selected) {
     elements.detailContent.innerHTML = "<p class=\"placeholder\">Select a FOIA request to view detailed information.</p>";
@@ -291,12 +378,14 @@ function renderDetailPanel() {
   elements.detailContent.innerHTML = `
     <h3>${escapeHtml(selected.request_id)}</h3>
     <div class="detail-grid">
-      <span class="detail-label">Division</span><span>${escapeHtml(selected.division)}</span>
+      <span class="detail-label">DCI Work Unit</span><span>${escapeHtml(selected.dci_work_unit)}</span>
       <span class="detail-label">Requester</span><span>${escapeHtml(selected.requester)}</span>
       <span class="detail-label">Subject</span><span>${escapeHtml(selected.subject)}</span>
       <span class="detail-label">Status</span><span>${escapeHtml(selected.status)}</span>
+      <span class="detail-label">Days Open</span><span>${daysBetween(selected.received_date, today)}</span>
       <span class="detail-label">Received</span><span>${formatDate(selected.received_date)}</span>
       <span class="detail-label">Due Date</span><span>${formatDate(selected.due_date)} (${dueLabel})</span>
+      <span class="detail-label">Days Remaining</span><span>${escapeHtml(formatDueInShort(dueInDays))}</span>
       <span class="detail-label">Assigned To</span><span>${escapeHtml(selected.assigned_to)}</span>
       <span class="detail-label">Last Update</span><span>${formatDate(selected.last_update)}</span>
       <span class="detail-label">Closed Date</span><span>${closedDate}</span>
@@ -306,14 +395,24 @@ function renderDetailPanel() {
 }
 
 function normalizeRecord(record) {
+  const workUnit = normalizeWorkUnit(record.dci_work_unit || record.work_unit);
   return {
     ...record,
+    dci_work_unit: workUnit,
     status: normalizeStatus(record.status),
     received_date: parseDate(record.received_date),
     due_date: parseDate(record.due_date),
     last_update: parseDate(record.last_update),
     closed_date: record.closed_date ? parseDate(record.closed_date) : null
   };
+}
+
+function normalizeWorkUnit(value) {
+  const normalized = String(value || "").trim();
+  if (DCI_WORK_UNITS.includes(normalized)) {
+    return normalized;
+  }
+  return "Unknown";
 }
 
 function normalizeStatus(status) {
@@ -329,13 +428,6 @@ function normalizeStatus(status) {
 
 function isOpenStatus(status) {
   return status !== "Closed";
-}
-
-function getDivisionCounts(records) {
-  return records.reduce((acc, record) => {
-    acc[record.division] = (acc[record.division] || 0) + 1;
-    return acc;
-  }, {});
 }
 
 function parseDate(value) {
@@ -377,6 +469,16 @@ function formatDueIn(days) {
     return "Due today";
   }
   return `Due in ${days} day${days === 1 ? "" : "s"}`;
+}
+
+function formatDueInShort(days) {
+  if (days < 0) {
+    return `${Math.abs(days)} overdue`;
+  }
+  if (days === 0) {
+    return "Due today";
+  }
+  return String(days);
 }
 
 function escapeHtml(value) {
