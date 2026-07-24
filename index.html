@@ -47,12 +47,43 @@
         <section class="panel filter-panel" aria-label="Dashboard filters">
           <div class="panel-header panel-header-filters">
             <h2>Filters</h2>
-            <label class="filter-control" for="workUnitFilter">
-              <span>DCI Work Unit</span>
-              <select id="workUnitFilter" aria-label="Filter by DCI Work Unit">
-                <option value="ALL">All DCI Work Units</option>
-              </select>
+            <div class="filter-controls-grid">
+              <label class="filter-control" for="workUnitFilter">
+                <span>DCI Work Unit</span>
+                <select id="workUnitFilter" aria-label="Filter by DCI Work Unit">
+                  <option value="ALL">All DCI Work Units</option>
+                </select>
+              </label>
+              <label class="filter-control" for="statusFilter">
+                <span>Status</span>
+                <select id="statusFilter" aria-label="Filter by FOIA Status">
+                  <option value="ALL_STATUSES">All Statuses</option>
+                </select>
+              </label>
+              <label class="filter-control" for="timePeriodFilter">
+                <span>Time Period</span>
+                <select id="timePeriodFilter" aria-label="Filter by Time Period">
+                  <option value="ALL_TIME">All Time</option>
+                  <option value="THIS_MONTH">This Month</option>
+                  <option value="LAST_30_DAYS">Last 30 Days</option>
+                  <option value="LAST_90_DAYS">Last 90 Days</option>
+                  <option value="THIS_YEAR">This Year</option>
+                </select>
+              </label>
+            </div>
+          </div>
+          <div class="custom-date-grid" aria-label="Custom date range">
+            <label class="filter-control" for="customStartDate">
+              <span>Custom Start Date</span>
+              <input id="customStartDate" type="date" aria-label="Custom start date">
             </label>
+            <label class="filter-control" for="customEndDate">
+              <span>Custom End Date</span>
+              <input id="customEndDate" type="date" aria-label="Custom end date">
+            </label>
+            <div class="filter-actions">
+              <button id="clearFiltersButton" class="btn btn-refresh" type="button" aria-label="Clear all filters">Clear Filters</button>
+            </div>
           </div>
           <div id="connectionStatusMessage" class="connection-status" role="status" aria-live="polite">Sign in with Microsoft to load live SharePoint data.</div>
           <div class="connection-toolbar">
@@ -74,9 +105,26 @@
         </section>
 
         <section class="kpi-grid" aria-label="Key performance indicators">
+          <div id="kpiScopeSummary" class="kpi-scope-summary" aria-live="polite">Showing all statuses for all DCI work units across all time.</div>
           <article class="kpi-card">
-            <h2>Total Open FOIAs</h2>
-            <p id="kpiTotalOpen" class="kpi-value">0</p>
+            <h2>1. NEW</h2>
+            <p id="kpiStatusNew" class="kpi-value">0</p>
+          </article>
+          <article class="kpi-card">
+            <h2>2. IN PROGRESS</h2>
+            <p id="kpiStatusInProgress" class="kpi-value">0</p>
+          </article>
+          <article class="kpi-card">
+            <h2>3. PENDING WITH LEGAL</h2>
+            <p id="kpiStatusPendingLegal" class="kpi-value">0</p>
+          </article>
+          <article class="kpi-card">
+            <h2>4. WORK UNIT RESPONDED</h2>
+            <p id="kpiStatusUnitResponded" class="kpi-value">0</p>
+          </article>
+          <article class="kpi-card">
+            <h2>5. DCI COMPLETED</h2>
+            <p id="kpiStatusCompleted" class="kpi-value">0</p>
           </article>
           <article class="kpi-card">
             <h2>Due in 10 Days</h2>
@@ -95,21 +143,21 @@
             <p id="kpiOverdue" class="kpi-value">0</p>
           </article>
           <article class="kpi-card">
-            <h2>Average Days Open</h2>
-            <p id="kpiAvgDaysOpen" class="kpi-value">0</p>
+            <h2>Average Days in Progress</h2>
+            <p id="kpiAvgDaysInProgress" class="kpi-value">0</p>
           </article>
           <article class="kpi-card">
-            <h2>Closed This Month</h2>
-            <p id="kpiClosedThisMonth" class="kpi-value">0</p>
+            <h2>DCI Received This Month</h2>
+            <p id="kpiReceivedThisMonth" class="kpi-value">0</p>
           </article>
           <article class="kpi-card">
-            <h2>Open Work Units</h2>
-            <p id="kpiOpenWorkUnits" class="kpi-value">0</p>
+            <h2>DCI Completed This Month</h2>
+            <p id="kpiCompletedThisMonth" class="kpi-value">0</p>
           </article>
         </section>
 
         <section class="operations-grid">
-          <article class="panel chart-panel">
+          <article class="panel chart-panel summary-panel">
             <div class="panel-header">
               <h2>DCI Work Unit Summary</h2>
             </div>
@@ -118,14 +166,40 @@
                 <thead>
                   <tr>
                     <th>DCI Work Unit</th>
-                    <th>Open</th>
-                    <th>Due in 10</th>
-                    <th>Due in 5</th>
-                    <th>Due Today</th>
-                    <th>Overdue</th>
+                    <th title="1. NEW" aria-label="1. NEW">New</th>
+                    <th title="2. IN PROGRESS" aria-label="2. IN PROGRESS">In Progress</th>
+                    <th title="3. PENDING WITH LEGAL" aria-label="3. PENDING WITH LEGAL">Pending Legal</th>
+                    <th title="4. WORK UNIT RESPONDED" aria-label="4. WORK UNIT RESPONDED">Unit Responded</th>
+                    <th title="5. DCI COMPLETED" aria-label="5. DCI COMPLETED">Completed</th>
+                    <th title="Due in 10 Days (6-10 days remaining)" aria-label="Due in 10 Days">Due 10</th>
+                    <th title="Due in 5 Days (1-5 days remaining)" aria-label="Due in 5 Days">Due 5</th>
+                    <th title="Due Today" aria-label="Due Today">Due Today</th>
+                    <th title="Overdue" aria-label="Overdue">Overdue</th>
+                    <th title="Average Days In Progress" aria-label="Average Days In Progress">Avg Days</th>
+                    <th title="DCI Received This Month" aria-label="DCI Received This Month">Recv Mo</th>
+                    <th title="DCI Completed This Month" aria-label="DCI Completed This Month">Comp Mo</th>
+                    <th>Total</th>
                   </tr>
                 </thead>
                 <tbody id="workUnitSummaryBody"></tbody>
+              </table>
+            </div>
+          </article>
+
+          <article class="panel trend-panel">
+            <div class="panel-header">
+              <h2>DCI Received vs. DCI Completed</h2>
+            </div>
+            <div class="table-wrap trend-table-wrap">
+              <table aria-label="DCI received versus completed trend">
+                <thead>
+                  <tr>
+                    <th>Period</th>
+                    <th>DCI Received</th>
+                    <th>DCI Completed</th>
+                  </tr>
+                </thead>
+                <tbody id="trendTableBody"></tbody>
               </table>
             </div>
           </article>
@@ -161,10 +235,11 @@
                   <th>Subject</th>
                   <th>Requester</th>
                   <th>DCI Work Unit</th>
-                  <th>Status</th>
-                  <th>Days Open</th>
+                  <th>Exact Status</th>
+                  <th>Date DCI Received</th>
                   <th>Due Date</th>
-                  <th>Days Remaining</th>
+                  <th>Date Closed</th>
+                  <th>Days In Progress / Days To Complete</th>
                 </tr>
               </thead>
               <tbody id="foiaTableBody"></tbody>

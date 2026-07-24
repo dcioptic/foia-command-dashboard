@@ -25,8 +25,12 @@ If Graph authentication is not configured or fails, it falls back to `foia-data.
 	- Average Days Open
 	- Closed This Month
 	- Open Work Units
-- DCI Work Unit filter with "All DCI Work Units"
-- DCI Work Unit summary with open and deadline buckets
+- Combined filters:
+	- DCI Work Unit
+	- Status (All Statuses, 1. NEW, 2. IN PROGRESS, 3. PENDING WITH LEGAL, 4. WORK UNIT RESPONDED, 5. DCI COMPLETED)
+	- Time period and custom date range
+	- Search query
+- DCI Work Unit summary with per-status counts and total
 - Upcoming deadlines panel
 - Searchable FOIA request table
 - Right-side detail panel for selected request
@@ -103,11 +107,18 @@ Then open:
 ## Data Notes
 
 - All records are DCI-only and use `dci_work_unit`
-- `status` supports `Open`, `In Review`, and `Closed`
-- `closed_date` is set for closed requests
+- Status labels are preserved exactly from SharePoint choice values
+- Fallback status choices are:
+	- 1. NEW
+	- 2. IN PROGRESS
+	- 3. PENDING WITH LEGAL
+	- 4. WORK UNIT RESPONDED
+	- 5. DCI COMPLETED
+- Open-stage calculations use statuses 1-4; completed calculations use status 5 only
+- For time-period filtering, open-stage statuses use DATE DCI RECEIVED (Created fallback) and completed uses DATE CLOSED
 
 ## Next Steps
 
-- Add additional filters (status, assigned analyst)
+- Add assigned-analyst filtering
 - Add CSV export
-- Integrate with SharePoint or Microsoft Lists when data model is finalized
+- Add trend chart visualizations for open vs completed by period
