@@ -40,11 +40,10 @@ const ALL_WORK_UNITS_OPTION = "ALL";
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const DEFAULT_GRAPH_SCOPES = ["User.Read", "Sites.Read.All"];
 const LIVE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
-const SHAREPOINT_TARGET = {
-  siteUrl: "https://ilgov.sharepoint.com/teams/ISP.DCI.Commanders",
-  listPathContains: "/Lists/DCI%20FOIA/",
-  expectedDisplayName: "DCI FOIA"
-};
+const SHAREPOINT_HOSTNAME = "ilgov.sharepoint.com";
+const SHAREPOINT_SITE_PATH = "/teams/ISP.DCI.Commanders";
+const SHAREPOINT_FOIA_LIST_PATH = "/Lists/DCI%20FOIA/";
+const SHAREPOINT_FOIA_LIST_NAME_FALLBACKS = ["DCI FOIA", "DCI FOIA TRACKER", "DCI FOIA Tracker"];
 
 const state = {
   records: [],
@@ -62,6 +61,18 @@ const state = {
     liveItemsLoaded: 0,
     dataSource: "None",
     lastUpdated: null
+  },
+  liveConnection: {
+    site: {
+      id: "",
+      displayName: "",
+      webUrl: ""
+    },
+    list: {
+      id: "",
+      displayName: "",
+      webUrl: ""
+    }
   }
 };
 
@@ -325,23 +336,26 @@ async function refreshLiveData(options = {}) {
 
 async function loadLiveSharePointData() {
   const token = await acquireGraphAccessToken();
-  const site = await resolveSiteByUrl(token, SHAREPOINT_TARGET.siteUrl);
-  state.diagnostics.siteResolved = true;
 
-  const list = await resolveListByWebUrl(token, site.id, SHAREPOINT_TARGET);
+  const site = await resolveSharePointSite(token);
+  state.liveConnection.site.id = site.id || "";
+  state.liveConnection.site.displayName = site.displayName || "";
+  state.liveConnection.site.webUrl = site.webUrl || "";
+  state.diagnostics.siteResolved = true;
+  renderDiagnostics();
+
+  const list = await resolveFoiaList(token, site.id);
+  state.liveConnection.list.id = list.id || "";
+  state.liveConnection.list.displayName = list.displayName || "";
+  state.liveConnection.list.webUrl = list.webUrl || "";
   state.diagnostics.listResolved = true;
+  renderDiagnostics();
 
   const items = await fetchAllListItems(token, site.id, list.id);
   const fieldInternalNames = collectFieldNames(items);
 
-  console.log("SharePoint live-data diagnostics", {
-    siteId: site.id,
-    listId: list.id,
-    listDisplayName: list.displayName,
-    listWebUrl: list.webUrl,
-    itemCount: items.length,
-    availableFieldInternalNames: fieldInternalNames
-  });
+  console.log("Number of list items returned:", items.length);
+  console.log("Available field internal names from the first item:", Object.keys(items[0]?.fields || {}));
 
   state.diagnostics.liveItemsLoaded = items.length;
   state.diagnostics.dataSource = "SharePoint";
@@ -362,19 +376,36 @@ async function handleLiveLoadFailure(error, options = {}) {
   } = options;
 
   console.error("SharePoint authentication or loading failed.", error);
-  const message = extractErrorMessage(error);
+  const message = getLiveLoadFailureMessage(error);
   const statusTone = nonIntrusive ? "warning" : "error";
-  showStatusMessage(`Connection failed: ${message}`, statusTone);
+  showStatusMessage(message, statusTone);
 
   if (!keepCurrentData) {
-    state.diagnostics.siteResolved = false;
-    state.diagnostics.listResolved = false;
+    if (error?.stage === "site") {
+      state.diagnostics.siteResolved = false;
+      state.diagnostics.listResolved = false;
+      state.liveConnection.site.id = "";
+      state.liveConnection.site.displayName = "";
+      state.liveConnection.site.webUrl = "";
+    } else if (error?.stage === "list") {
+      state.diagnostics.siteResolved = true;
+      state.diagnostics.listResolved = false;
+    } else {
+      state.diagnostics.siteResolved = false;
+      state.diagnostics.listResolved = false;
+      state.liveConnection.site.id = "";
+      state.liveConnection.site.displayName = "";
+      state.liveConnection.site.webUrl = "";
+    }
     state.diagnostics.liveItemsLoaded = 0;
+    state.liveConnection.list.id = "";
+    state.liveConnection.list.displayName = "";
+    state.liveConnection.list.webUrl = "";
   }
 
   if (!fallbackToDemo && keepCurrentData) {
     const failureLabel = reason === "manual" ? "Manual refresh failed" : "Automatic refresh failed";
-    showStatusMessage(`${failureLabel}: ${message}. Current data remains visible.`, "warning");
+    showStatusMessage(`${failureLabel}: ${message} Current data remains visible.`, "warning");
   }
 
   renderDiagnostics();
@@ -390,10 +421,13 @@ async function acquireGraphAccessToken() {
     throw new Error("No signed-in account. Use Sign in with Microsoft.");
   }
 
+  const scopes = getGraphScopes();
+  console.log("Graph token scopes requested:", scopes);
+
   try {
     const tokenResult = await msalInstance.acquireTokenSilent({
       account,
-      scopes: getGraphScopes()
+      scopes
     });
     return tokenResult.accessToken;
   } catch (error) {
@@ -403,7 +437,7 @@ async function acquireGraphAccessToken() {
 
     const tokenResult = await msalInstance.acquireTokenPopup({
       account,
-      scopes: getGraphScopes()
+      scopes
     });
     return tokenResult.accessToken;
   }
@@ -417,61 +451,179 @@ async function graphFetch(token, url) {
     }
   });
 
+  const status = response.status;
+  const rawText = await response.text();
+
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(`Graph request failed (${response.status}): ${message}`);
+    let errorPayload = null;
+    if (rawText) {
+      try {
+        errorPayload = JSON.parse(rawText);
+      } catch {
+        errorPayload = null;
+      }
+    }
+
+    const graphError = errorPayload?.error || rawText || "Unknown Graph error";
+    console.error("Graph request failed", {
+      url,
+      status,
+      error: graphError
+    });
+    const error = new Error(`Graph request failed (${status})`);
+    error.graphStatus = status;
+    error.graphError = graphError;
+    throw error;
   }
 
-  return response.json();
-}
-
-async function resolveSiteByUrl(token, siteUrl) {
-  const parsed = new URL(siteUrl);
-  const sitePath = parsed.pathname;
-  const endpoint = `${GRAPH_ROOT}/sites/${parsed.hostname}:${sitePath}`;
-  const site = await graphFetch(token, endpoint);
-  console.log("Resolved SharePoint site", { siteId: site.id, siteWebUrl: site.webUrl || siteUrl });
-  return site;
-}
-
-async function resolveListByWebUrl(token, siteId, target) {
-  const endpoint = `${GRAPH_ROOT}/sites/${encodeURIComponent(siteId)}/lists?$select=id,displayName,webUrl`;
-  const payload = await graphFetch(token, endpoint);
-  const lists = payload.value || [];
-
-  const normalizedTargetPath = target.listPathContains.toLowerCase();
-  const normalizedDecodedTargetPath = decodeURIComponent(target.listPathContains).toLowerCase();
-
-  const byWebUrl = lists.find((list) => {
-    const normalizedWebUrl = String(list.webUrl || "").toLowerCase();
-    return normalizedWebUrl.includes(normalizedTargetPath) || normalizedWebUrl.includes(normalizedDecodedTargetPath);
-  });
-
-  const byName = lists.find((list) => String(list.displayName || "").toLowerCase() === target.expectedDisplayName.toLowerCase());
-  const resolved = byWebUrl || byName;
-
-  if (!resolved) {
-    throw new Error(`Unable to resolve list with path ${target.listPathContains} or name ${target.expectedDisplayName}.`);
+  let payload = {};
+  if (rawText) {
+    try {
+      payload = JSON.parse(rawText);
+    } catch {
+      throw new Error(`Graph response JSON parsing failed (${status})`);
+    }
   }
 
-  console.log("Resolved SharePoint list", { id: resolved.id, displayName: resolved.displayName, webUrl: resolved.webUrl });
+  return {
+    status,
+    data: payload
+  };
+}
 
-  return resolved;
+async function resolveSharePointSite(token) {
+  const siteEndpoint = `${GRAPH_ROOT}/sites/${SHAREPOINT_HOSTNAME}:${encodeURI(SHAREPOINT_SITE_PATH)}?$select=id,displayName,webUrl`;
+  console.log("Graph site endpoint requested:", siteEndpoint);
+
+  try {
+    const response = await graphFetch(token, siteEndpoint);
+    console.log("Site response HTTP status:", response.status);
+
+    const site = response.data || {};
+    console.log("Resolved site:", {
+      id: site.id || "",
+      displayName: site.displayName || "",
+      webUrl: site.webUrl || ""
+    });
+
+    if (!site.id) {
+      throw new Error("SharePoint site response was missing a site id.");
+    }
+
+    return site;
+  } catch (error) {
+    throw createStageError(
+      "site",
+      "Signed in, but the ISP.DCI.Commanders SharePoint site could not be resolved.",
+      error
+    );
+  }
+}
+
+async function resolveFoiaList(token, siteId) {
+  const encodedSiteId = encodeURIComponent(siteId);
+  let nextUrl = `${GRAPH_ROOT}/sites/${encodedSiteId}/lists?$select=id,displayName,name,webUrl`;
+  const allLists = [];
+
+  try {
+    while (nextUrl) {
+      const response = await graphFetch(token, nextUrl);
+      allLists.push(...(response.data?.value || []));
+      nextUrl = response.data?.["@odata.nextLink"] || null;
+    }
+
+    console.log("Number of lists returned:", allLists.length);
+    console.table(
+      allLists.map((list) => ({
+        id: list.id || "",
+        displayName: list.displayName || "",
+        name: list.name || "",
+        webUrl: list.webUrl || ""
+      }))
+    );
+
+    const normalizedPathTarget = normalizeListUrl(SHAREPOINT_FOIA_LIST_PATH);
+    const resolvedByUrl = allLists.find((list) => normalizeListUrl(list.webUrl).includes(normalizedPathTarget));
+
+    const fallbackNames = new Set(SHAREPOINT_FOIA_LIST_NAME_FALLBACKS.map((name) => name.toLowerCase()));
+    const resolvedByName = allLists.find((list) => {
+      const displayName = String(list.displayName || "").trim().toLowerCase();
+      return fallbackNames.has(displayName);
+    });
+
+    const resolved = resolvedByUrl || resolvedByName;
+
+    if (!resolved) {
+      throw new Error("Unable to locate FOIA list by URL or fallback display names.");
+    }
+
+    console.log("Resolved list:", {
+      id: resolved.id || "",
+      displayName: resolved.displayName || "",
+      webUrl: resolved.webUrl || ""
+    });
+
+    return resolved;
+  } catch (error) {
+    throw createStageError(
+      "list",
+      "SharePoint site connected, but the DCI FOIA list could not be located.",
+      error
+    );
+  }
 }
 
 async function fetchAllListItems(token, siteId, listId) {
   const encodedSiteId = encodeURIComponent(siteId);
   const encodedListId = encodeURIComponent(listId);
-  let nextUrl = `${GRAPH_ROOT}/sites/${encodedSiteId}/lists/${encodedListId}/items?$expand=fields&$top=200`;
+  let nextUrl = `${GRAPH_ROOT}/sites/${encodedSiteId}/lists/${encodedListId}/items?$expand=fields`;
   const allItems = [];
 
   while (nextUrl) {
     const page = await graphFetch(token, nextUrl);
-    allItems.push(...(page.value || []));
-    nextUrl = page["@odata.nextLink"] || null;
+    allItems.push(...(page.data?.value || []));
+    nextUrl = page.data?.["@odata.nextLink"] || null;
   }
 
   return allItems;
+}
+
+function normalizeListUrl(value) {
+  if (!value) {
+    return "";
+  }
+
+  let normalized = String(value).trim().toLowerCase();
+  try {
+    normalized = decodeURIComponent(normalized);
+  } catch {
+    // Keep original normalized text when URL decoding is not possible.
+  }
+
+  const queryIndex = normalized.indexOf("?");
+  if (queryIndex >= 0) {
+    normalized = normalized.slice(0, queryIndex);
+  }
+
+  normalized = normalized.replace(/\/+$/, "");
+  return normalized;
+}
+
+function createStageError(stage, message, cause) {
+  const error = new Error(message);
+  error.stage = stage;
+  error.cause = cause;
+  return error;
+}
+
+function getLiveLoadFailureMessage(error) {
+  if (error?.stage === "site") {
+    return "Signed in, but the ISP.DCI.Commanders SharePoint site could not be resolved.";
+  }
+  if (error?.stage === "list") {
+    return "SharePoint site connected, but the DCI FOIA list could not be located.";
+  }
+  return `Connection failed: ${extractErrorMessage(error)}`;
 }
 
 function mapGraphItemToRecord(item) {
@@ -530,9 +682,14 @@ function getPreferredAccount() {
 }
 
 function getGraphScopes() {
-  return Array.isArray(window.GRAPH_CONFIG?.scopes) && window.GRAPH_CONFIG.scopes.length
+  const requestedScopes = Array.isArray(window.GRAPH_CONFIG?.scopes) && window.GRAPH_CONFIG.scopes.length
     ? window.GRAPH_CONFIG.scopes
     : DEFAULT_GRAPH_SCOPES;
+
+  const scopeSet = new Set(requestedScopes);
+  scopeSet.add("User.Read");
+  scopeSet.add("Sites.Read.All");
+  return Array.from(scopeSet);
 }
 
 function updateAuthDiagnostics(account, statusText) {
@@ -596,7 +753,7 @@ async function loadDemoData(reason) {
     state.diagnostics.dataSource = "Demo";
     state.diagnostics.liveItemsLoaded = 0;
     renderDiagnostics();
-    showStatusMessage(`Demo data currently displayed. ${reason}`, "demo");
+    showStatusMessage(`DEMO FALLBACK: Demo data currently displayed. ${reason}`, "demo");
   } catch (fallbackError) {
     state.records = [];
     state.availableWorkUnits = [];
