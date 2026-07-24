@@ -38,13 +38,13 @@ const DCI_WORK_UNITS = [
 
 const ALL_WORK_UNITS_OPTION = "ALL";
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
+const DEFAULT_GRAPH_SCOPES = ["User.Read", "Sites.Read.All"];
+const LIVE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const SHAREPOINT_TARGET = {
   siteUrl: "https://ilgov.sharepoint.com/teams/ISP.DCI.Commanders",
   listPathContains: "/Lists/DCI%20FOIA/",
   expectedDisplayName: "DCI FOIA"
 };
-const GRAPH_SCOPES = ["User.Read", "Sites.Read.All"];
-const LIVE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 const state = {
   records: [],
@@ -84,6 +84,7 @@ const elements = {
   darkModeToggle: document.getElementById("darkModeToggle"),
   presentationToggle: document.getElementById("presentationToggle"),
   signInButton: document.getElementById("signInButton"),
+  refreshNowButton: document.getElementById("refreshNowButton"),
   connectionStatusMessage: document.getElementById("connectionStatusMessage"),
   diagAuthStatus: document.getElementById("diagAuthStatus"),
   diagSignedInUser: document.getElementById("diagSignedInUser"),
@@ -92,33 +93,46 @@ const elements = {
   diagLiveItemsLoaded: document.getElementById("diagLiveItemsLoaded"),
   diagDataSource: document.getElementById("diagDataSource"),
   diagLastUpdated: document.getElementById("diagLastUpdated"),
-  lastUpdatedValue: document.getElementById("lastUpdatedValue"),
-  refreshNowButton: document.getElementById("refreshNowButton")
+  lastUpdatedValue: document.getElementById("lastUpdatedValue")
 };
 
 const today = startOfDay(new Date());
-let msalClient = null;
+let msalInstance = null;
 let liveRefreshTimerId = null;
 let liveRefreshInProgress = false;
+let signInHandlerAttached = false;
 
 initialize();
 
 async function initialize() {
-  attachEventListeners();
+  attachCoreEventListeners();
+  setAuthControlsEnabled(false);
   renderDiagnostics();
   showStatusMessage("Sign in with Microsoft to load live SharePoint data.", "");
   setTableMessage("Sign in with Microsoft to load live SharePoint data.");
+
+  console.info("Startup auth diagnostics", {
+    graphConfigDetected: Boolean(window.GRAPH_CONFIG),
+    msalLibraryDetected: Boolean(window.msal?.PublicClientApplication)
+  });
+
   try {
-    await initializeMsal();
+    await initializeAuthentication();
+    ensureSignInHandlerAttached();
+    setAuthControlsEnabled(true);
     await trySilentLiveLoad();
   } catch (error) {
     console.error("MSAL initialization failed.", error);
-    showStatusMessage(`Authentication setup failed: ${extractErrorMessage(error)}`, "error");
-    await loadDemoData(`Authentication setup failed: ${extractErrorMessage(error)}`);
+    state.diagnostics.authStatus = "Initialization failed";
+    renderDiagnostics();
+    setAuthControlsEnabled(false);
+    const reason = `Authentication setup failed: ${extractErrorMessage(error)}`;
+    showStatusMessage(reason, "error");
+    await loadDemoData(reason);
   }
 }
 
-function attachEventListeners() {
+function attachCoreEventListeners() {
   elements.searchInput.addEventListener("input", (event) => {
     state.searchQuery = event.target.value;
     applyFilters();
@@ -143,60 +157,118 @@ function attachEventListeners() {
       : "Presentation Mode";
   });
 
-  elements.signInButton.addEventListener("click", async () => {
-    await handleSignInClick();
-  });
-
   elements.refreshNowButton.addEventListener("click", async () => {
-    await refreshLiveData({ reason: "manual", showBusyState: true, fallbackToDemoOnFailure: false, keepCurrentDataOnFailure: true });
+    await refreshLiveData({
+      reason: "manual",
+      showBusyState: true,
+      fallbackToDemoOnFailure: false,
+      keepCurrentDataOnFailure: true
+    });
   });
 }
 
-async function initializeMsal() {
-  if (!window.msal || !window.SHAREPOINT_GRAPH_CONFIG?.msalConfig) {
-    throw new Error("MSAL configuration is missing. Update graph-config.js with the Microsoft Entra app settings.");
+function ensureSignInHandlerAttached() {
+  if (signInHandlerAttached) {
+    return;
+  }
+  elements.signInButton.addEventListener("click", async () => {
+    await handleSignInClick();
+  });
+  signInHandlerAttached = true;
+}
+
+async function initializeAuthentication() {
+  if (!window.msal || !window.msal.PublicClientApplication) {
+    throw new Error("MSAL Browser failed to load.");
   }
 
-  msalClient = new window.msal.PublicClientApplication(window.SHAREPOINT_GRAPH_CONFIG.msalConfig);
-  await msalClient.initialize();
+  const config = window.GRAPH_CONFIG;
+  if (!config?.clientId || !config?.tenantId || !config?.authority || !config?.redirectUri) {
+    throw new Error("Microsoft Entra configuration is missing.");
+  }
+
+  if (msalInstance) {
+    return;
+  }
+
+  const msalConfig = {
+    auth: {
+      clientId: config.clientId,
+      authority: config.authority,
+      redirectUri: config.redirectUri,
+      postLogoutRedirectUri: config.redirectUri,
+      navigateToLoginRequestUrl: false
+    },
+    cache: {
+      cacheLocation: "sessionStorage",
+      storeAuthStateInCookie: false
+    }
+  };
+
+  msalInstance = new window.msal.PublicClientApplication(msalConfig);
+
+  if (typeof msalInstance.initialize === "function") {
+    await msalInstance.initialize();
+  }
+
+  await msalInstance.handleRedirectPromise();
+
+  const accounts = msalInstance.getAllAccounts();
+  if (accounts.length > 0) {
+    msalInstance.setActiveAccount(accounts[0]);
+  }
+}
+
+function setAuthControlsEnabled(enabled) {
+  elements.signInButton.disabled = !enabled;
+  elements.refreshNowButton.disabled = !enabled;
 }
 
 async function trySilentLiveLoad() {
   const account = getPreferredAccount();
   if (!account) {
+    state.diagnostics.authStatus = "Ready to sign in";
+    renderDiagnostics();
     return;
   }
 
-  msalClient.setActiveAccount(account);
+  msalInstance.setActiveAccount(account);
   updateAuthDiagnostics(account, "Signed in");
 
-  try {
-    await refreshLiveData({ reason: "startup", showBusyState: false, fallbackToDemoOnFailure: true, keepCurrentDataOnFailure: false });
-    startLiveRefreshSchedule();
-  } catch (error) {
-    await handleLiveLoadFailure(error, {
-      fallbackToDemo: true,
-      keepCurrentData: false,
-      nonIntrusive: false,
-      reason: "startup"
-    });
-  }
+  await refreshLiveData({
+    reason: "startup",
+    showBusyState: false,
+    fallbackToDemoOnFailure: true,
+    keepCurrentDataOnFailure: false
+  });
+  startLiveRefreshSchedule();
 }
 
 async function handleSignInClick() {
+  if (!msalInstance) {
+    showStatusMessage("Microsoft sign-in is unavailable because authentication initialization did not complete.", "error");
+    return;
+  }
+
   elements.signInButton.disabled = true;
   elements.signInButton.textContent = "Signing in...";
 
   try {
-    const loginResult = await msalClient.loginPopup({
-      scopes: GRAPH_SCOPES,
+    const loginRequest = {
+      scopes: getGraphScopes(),
       prompt: "select_account"
-    });
+    };
 
-    const account = loginResult.account;
-    msalClient.setActiveAccount(account);
-    updateAuthDiagnostics(account, "Signed in");
-    await refreshLiveData({ reason: "signin", showBusyState: false, fallbackToDemoOnFailure: true, keepCurrentDataOnFailure: false });
+    const loginResponse = await msalInstance.loginPopup(loginRequest);
+    msalInstance.setActiveAccount(loginResponse.account);
+    updateAuthDiagnostics(loginResponse.account, "Signed in");
+
+    await refreshLiveData({
+      reason: "signin",
+      showBusyState: false,
+      fallbackToDemoOnFailure: true,
+      keepCurrentDataOnFailure: false
+    });
     startLiveRefreshSchedule();
   } catch (error) {
     await handleLiveLoadFailure(error, {
@@ -224,6 +296,7 @@ async function refreshLiveData(options = {}) {
   }
 
   liveRefreshInProgress = true;
+
   if (showBusyState) {
     elements.refreshNowButton.disabled = true;
     elements.refreshNowButton.textContent = "Refreshing...";
@@ -315,13 +388,20 @@ async function acquireGraphAccessToken() {
   }
 
   try {
-    const tokenResult = await msalClient.acquireTokenSilent({ account, scopes: GRAPH_SCOPES });
+    const tokenResult = await msalInstance.acquireTokenSilent({
+      account,
+      scopes: getGraphScopes()
+    });
     return tokenResult.accessToken;
   } catch (error) {
     if (!isInteractionRequired(error)) {
       throw error;
     }
-    const tokenResult = await msalClient.acquireTokenPopup({ account, scopes: GRAPH_SCOPES });
+
+    const tokenResult = await msalInstance.acquireTokenPopup({
+      account,
+      scopes: getGraphScopes()
+    });
     return tokenResult.accessToken;
   }
 }
@@ -440,10 +520,16 @@ function collectFieldNames(items) {
 }
 
 function getPreferredAccount() {
-  if (!msalClient) {
+  if (!msalInstance) {
     return null;
   }
-  return msalClient.getActiveAccount() || msalClient.getAllAccounts()[0] || null;
+  return msalInstance.getActiveAccount() || msalInstance.getAllAccounts()[0] || null;
+}
+
+function getGraphScopes() {
+  return Array.isArray(window.GRAPH_CONFIG?.scopes) && window.GRAPH_CONFIG.scopes.length
+    ? window.GRAPH_CONFIG.scopes
+    : DEFAULT_GRAPH_SCOPES;
 }
 
 function updateAuthDiagnostics(account, statusText) {
@@ -501,6 +587,7 @@ async function loadDemoData(reason) {
     if (!response.ok) {
       throw new Error(`Data request failed with status ${response.status}`);
     }
+
     const rawRecords = await response.json();
     setDashboardRecords(rawRecords);
     state.diagnostics.dataSource = "Demo";
@@ -545,6 +632,7 @@ function startLiveRefreshSchedule() {
   if (liveRefreshTimerId) {
     return;
   }
+
   liveRefreshTimerId = window.setInterval(async () => {
     await refreshLiveData({
       reason: "scheduled",
