@@ -88,8 +88,7 @@ body.dark .top-header {
   top: 50%;
   transform: translate(-50%, -50%);
   text-align: center;
-  width: max-content;
-  max-width: min(760px, calc(100% - 560px));
+  width: min(980px, calc(100% - 420px));
   padding-left: 0;
 }
 
@@ -113,37 +112,24 @@ body.dark .top-header {
 .brand-copy {
   display: grid;
   align-items: center;
-  gap: 0.06rem;
-}
-
-.eyebrow {
-  margin: 0 0 0.17rem;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: rgba(226, 236, 245, 0.86);
-  font-size: 0.69rem;
-  font-weight: 700;
+  gap: 0;
 }
 
 h1 {
   margin: 0;
-  font-size: clamp(1.22rem, 2.3vw, 1.8rem);
+  font-size: clamp(1rem, 1.55vw, 1.55rem);
   font-weight: 700;
   color: #f1f6fc;
-}
-
-.subhead {
-  margin: 0.17rem 0 0;
-  color: rgba(225, 235, 246, 0.84);
-  font-size: 0.75rem;
-  letter-spacing: 0.03em;
+  white-space: nowrap;
+  line-height: 1.05;
+  letter-spacing: 0.01em;
 }
 
 .header-logo {
   display: grid;
   place-items: center;
-  width: 78px;
-  height: 78px;
+  width: 106px;
+  height: 106px;
 }
 
 .header-logo-image {
@@ -772,11 +758,12 @@ body.presentation-mode .detail-content h3 {
 
   .header-center {
     padding-left: 0;
+    width: min(820px, calc(100% - 320px));
   }
 
   .header-logo {
-    width: 62px;
-    height: 62px;
+    width: 84px;
+    height: 84px;
   }
 
   .header-logo-image {

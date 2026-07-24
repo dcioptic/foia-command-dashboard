@@ -1,4 +1,4 @@
-# Illinois State Police FOIA Command Dashboard
+# Division of Criminal Investigation FOIA Command Dashboard
 
 Static dashboard prototype for tracking Illinois State Police FOIA requests.
 
@@ -14,7 +14,7 @@ No SharePoint or Microsoft Lists integration is included yet.
 
 ## Features
 
-- Header: Illinois State Police / FOIA Command Dashboard
+- Header: Division of Criminal Investigation FOIA Command Dashboard
 - KPI cards:
 	- Total Open FOIAs
 	- Due in 10 Days
