@@ -108,8 +108,10 @@ async function initialize() {
   attachCoreEventListeners();
   setAuthControlsEnabled(false);
   renderDiagnostics();
-  showStatusMessage("Sign in with Microsoft to load live SharePoint data.", "");
+  showStatusMessage("Demo data currently displayed. Sign in with Microsoft to load live SharePoint data.", "demo");
   setTableMessage("Sign in with Microsoft to load live SharePoint data.");
+
+  console.log("MSAL Browser loaded:", Boolean(window.msal?.PublicClientApplication));
 
   console.info("Startup auth diagnostics", {
     graphConfigDetected: Boolean(window.GRAPH_CONFIG),
@@ -229,6 +231,7 @@ async function trySilentLiveLoad() {
   if (!account) {
     state.diagnostics.authStatus = "Ready to sign in";
     renderDiagnostics();
+    await loadDemoData("Sign in with Microsoft to load live SharePoint data.");
     return;
   }
 
