@@ -72,7 +72,8 @@ const state = {
       id: "",
       displayName: "",
       webUrl: ""
-    }
+    },
+    fieldMap: {}
   }
 };
 
@@ -112,6 +113,7 @@ let msalInstance = null;
 let liveRefreshTimerId = null;
 let liveRefreshInProgress = false;
 let signInHandlerAttached = false;
+const devWarningFlags = new Set();
 
 initialize();
 
@@ -351,11 +353,19 @@ async function loadLiveSharePointData() {
   state.diagnostics.listResolved = true;
   renderDiagnostics();
 
-  const items = await fetchAllListItems(token, site.id, list.id);
-  const fieldInternalNames = collectFieldNames(items);
+  const columns = await fetchAllListColumns(token, site.id, list.id);
+  const fieldMap = buildSharePointFieldMap(columns);
+  state.liveConnection.fieldMap = fieldMap;
+  renderFieldMappingDiagnostics(fieldMap);
 
+  const items = await fetchAllListItems(token, site.id, list.id);
   console.log("Number of list items returned:", items.length);
-  console.log("Available field internal names from the first item:", Object.keys(items[0]?.fields || {}));
+  items.slice(0, 3).forEach((item) => {
+    console.log("SharePoint field keys:", Object.keys(item?.fields || {}));
+  });
+
+  const graphRecords = items.map((item) => mapGraphItemToRecord(item, fieldMap));
+  logFieldMappingValidationSummary(items, graphRecords);
 
   state.diagnostics.liveItemsLoaded = items.length;
   state.diagnostics.dataSource = "SharePoint";
@@ -363,7 +373,6 @@ async function loadLiveSharePointData() {
   showStatusMessage("Live SharePoint data connected", "live");
   renderDiagnostics();
 
-  const graphRecords = items.map((item) => mapGraphItemToRecord(item));
   setDashboardRecords(graphRecords);
 }
 
@@ -626,52 +635,436 @@ function getLiveLoadFailureMessage(error) {
   return `Connection failed: ${extractErrorMessage(error)}`;
 }
 
-function mapGraphItemToRecord(item) {
-  const fields = item.fields || {};
+function mapGraphItemToRecord(item, fieldMap) {
+  const fields = item?.fields || {};
+  const foiaNumber = readMappedText(fields, fieldMap.foiaNumber) || `ITEM-${item.id}`;
+  const statusFromField = readMappedChoice(fields, fieldMap.status);
+  const status = statusFromField || "Unknown";
+
+  if (!statusFromField) {
+    warnOnce("status-mapping-missing-value", "Status field mapping returned no value for one or more records. Status mapping may need attention.");
+  }
+
+  const workUnit = readMappedChoice(fields, fieldMap.workUnit);
+  const subjectValue = readMappedText(fields, fieldMap.subjectName);
+  const subject = subjectValue || foiaNumber;
+
+  const createdDate = readMappedDate(fields, fieldMap.created);
+  const receivedDate = readMappedDate(fields, fieldMap.dateReceived) || createdDate;
+  const fiveDaysOut = readMappedDate(fields, fieldMap.fiveDaysOut);
+  const tenDaysOut = readMappedDate(fields, fieldMap.tenDaysOut);
+  const dueDate = determineDueDate({
+    explicitDueDate: readMappedDate(fields, fieldMap.dueDate),
+    fiveDaysOut,
+    tenDaysOut
+  });
+
+  const assignedTo = readMappedPerson(fields, fieldMap.assignedTo, item.id);
+  const response = readMappedChoice(fields, fieldMap.response);
+  const requester = readMappedText(fields, fieldMap.division) || response;
+
+  const normalizedRecord = {
+    id: String(item.id || ""),
+    foiaNumber,
+    status,
+    foiaType: readMappedChoice(fields, fieldMap.foiaType),
+    receivedDate,
+    createdDate,
+    fiveDaysOut,
+    tenDaysOut,
+    response,
+    workUnit,
+    assignedTo,
+    subject,
+    crimepadCase: readMappedText(fields, fieldMap.crimepadCase),
+    tracsCase: readMappedText(fields, fieldMap.tracsCase),
+    otherCase: readMappedText(fields, fieldMap.otherCase),
+    modifiedDate: readMappedDate(fields, fieldMap.modified),
+    dueDate,
+    closedDate: readMappedDate(fields, fieldMap.closedDate),
+    notes: readMappedText(fields, fieldMap.notes)
+  };
+
   return {
-    request_id: pickFirstField(fields, ["request_id", "requestId", "RequestID", "FOIANumber", "Title"]) || `ITEM-${item.id}`,
-    dci_work_unit: pickFirstField(fields, ["dci_work_unit", "DCIWorkUnit", "WorkUnit"]),
-    requester: pickFirstField(fields, ["requester", "Requester", "RequesterName"]),
-    subject: pickFirstField(fields, ["subject", "Subject", "Title"]),
-    received_date: pickFirstField(fields, ["received_date", "ReceivedDate", "DateReceived", "Created"]),
-    due_date: pickFirstField(fields, ["due_date", "DueDate", "DateDue"]),
-    status: pickFirstField(fields, ["status", "Status"]),
-    assigned_to: pickFirstField(fields, ["assigned_to", "AssignedTo", "Owner"]),
-    last_update: pickFirstField(fields, ["last_update", "LastUpdate", "Modified"]),
-    closed_date: pickFirstField(fields, ["closed_date", "ClosedDate", "DateClosed"]),
-    notes: pickFirstField(fields, ["notes", "Notes", "Comments"])
+    request_id: normalizedRecord.foiaNumber,
+    dci_work_unit: normalizedRecord.workUnit,
+    requester,
+    subject: normalizedRecord.subject,
+    received_date: normalizedRecord.receivedDate,
+    due_date: normalizedRecord.dueDate,
+    status: normalizedRecord.status,
+    assigned_to: normalizedRecord.assignedTo,
+    last_update: normalizedRecord.modifiedDate,
+    closed_date: normalizedRecord.closedDate,
+    notes: normalizedRecord.notes,
+    foia_type: normalizedRecord.foiaType,
+    response: normalizedRecord.response,
+    created_date: normalizedRecord.createdDate,
+    five_days_out: normalizedRecord.fiveDaysOut,
+    ten_days_out: normalizedRecord.tenDaysOut,
+    crimepad_case: normalizedRecord.crimepadCase,
+    tracs_case: normalizedRecord.tracsCase,
+    other_case: normalizedRecord.otherCase
   };
 }
 
-function pickFirstField(fields, candidates) {
-  for (const key of candidates) {
-    const normalized = normalizeFieldValue(fields[key]);
-    if (normalized) {
-      return normalized;
+function normalizeColumnLabel(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function detectColumnType(column) {
+  if (column?.choice) {
+    return "choice";
+  }
+  if (column?.dateTime) {
+    return "dateTime";
+  }
+  if (column?.personOrGroup) {
+    return "personOrGroup";
+  }
+  if (column?.lookup) {
+    return "lookup";
+  }
+  if (column?.boolean) {
+    return "boolean";
+  }
+  if (column?.number) {
+    return "number";
+  }
+  if (column?.text) {
+    return "text";
+  }
+  return "unknown";
+}
+
+async function fetchAllListColumns(token, siteId, listId) {
+  const encodedSiteId = encodeURIComponent(siteId);
+  const encodedListId = encodeURIComponent(listId);
+  let nextUrl = `${GRAPH_ROOT}/sites/${encodedSiteId}/lists/${encodedListId}/columns?$select=id,name,displayName,description,hidden,readOnly,required,text,choice,dateTime,personOrGroup,lookup,boolean,number`;
+  const allColumns = [];
+
+  while (nextUrl) {
+    const page = await graphFetch(token, nextUrl);
+    allColumns.push(...(page.data?.value || []));
+    nextUrl = page.data?.["@odata.nextLink"] || null;
+  }
+
+  console.table(
+    allColumns.map((column) => ({
+      displayName: column.displayName || "",
+      name: column.name || "",
+      id: column.id || "",
+      hidden: Boolean(column.hidden),
+      readOnly: Boolean(column.readOnly),
+      detectedType: detectColumnType(column)
+    }))
+  );
+
+  return allColumns;
+}
+
+function findInternalName(variants, internalNameByDisplayName, fallbackByInternalName) {
+  for (const variant of variants) {
+    const normalized = normalizeColumnLabel(variant);
+    if (!normalized) {
+      continue;
+    }
+
+    const byDisplayName = internalNameByDisplayName.get(normalized);
+    if (byDisplayName) {
+      return byDisplayName;
+    }
+
+    const byInternalName = fallbackByInternalName.get(normalized);
+    if (byInternalName) {
+      return byInternalName;
+    }
+  }
+
+  console.warn("Column mapping not found for variants:", variants.join(" | "));
+  return "";
+}
+
+function buildSharePointFieldMap(columns) {
+  const internalNameByDisplayName = new Map(
+    columns
+      .filter((column) => column.displayName && column.name)
+      .map((column) => [normalizeColumnLabel(column.displayName), column.name])
+  );
+
+  const fallbackByInternalName = new Map(
+    columns
+      .filter((column) => column.name)
+      .map((column) => [normalizeColumnLabel(column.name), column.name])
+  );
+
+  const fieldMap = {
+    foiaNumber: findInternalName(["Title"], internalNameByDisplayName, fallbackByInternalName),
+    status: findInternalName(["STATUS", "Status"], internalNameByDisplayName, fallbackByInternalName),
+    division: findInternalName(["DIVISION", "Division"], internalNameByDisplayName, fallbackByInternalName),
+    foirType: findInternalName(["FOIR TYPE", "FOIR Type"], internalNameByDisplayName, fallbackByInternalName),
+    foiaType: findInternalName(["FOIA TYPE", "FOIR TYPE", "FOIA Type"], internalNameByDisplayName, fallbackByInternalName),
+    attachments: findInternalName(["Attachments"], internalNameByDisplayName, fallbackByInternalName),
+    dateStamped: findInternalName(["DATE STAMPED", "Date Stamped"], internalNameByDisplayName, fallbackByInternalName),
+    dateReceived: findInternalName(["DATE DCI RECEIVED", "Date DCI Received"], internalNameByDisplayName, fallbackByInternalName),
+    created: findInternalName(["Created"], internalNameByDisplayName, fallbackByInternalName) || "Created",
+    fiveDaysOut: findInternalName(["5 Days Out", "Five Days Out"], internalNameByDisplayName, fallbackByInternalName),
+    tenDaysOut: findInternalName(["10 Days Out", "Ten Days Out"], internalNameByDisplayName, fallbackByInternalName),
+    response: findInternalName(["RESPONSE", "Response"], internalNameByDisplayName, fallbackByInternalName),
+    workUnit: findInternalName(["DCI WORK UNIT", "DCI Work Unit"], internalNameByDisplayName, fallbackByInternalName),
+    assignedTo: findInternalName(["Assigned to", "Assigned To"], internalNameByDisplayName, fallbackByInternalName),
+    subjectName: findInternalName(["SUBJECT NAME", "Subject Name"], internalNameByDisplayName, fallbackByInternalName),
+    crimepadCase: findInternalName(["CRIMEPAD CASE #", "CRIMEPAD CASE"], internalNameByDisplayName, fallbackByInternalName),
+    tracsCase: findInternalName(["TRACS CASE #", "TRACS CASE"], internalNameByDisplayName, fallbackByInternalName),
+    otherCase: findInternalName(["OTHER CASE #", "OTHER CASE"], internalNameByDisplayName, fallbackByInternalName),
+    modified: findInternalName(["Modified"], internalNameByDisplayName, fallbackByInternalName) || "Modified",
+    dueDate: findInternalName(["DUE DATE", "DATE DUE", "DueDate", "due_date"], internalNameByDisplayName, fallbackByInternalName),
+    closedDate: findInternalName(["CLOSED DATE", "DATE CLOSED", "Closed Date"], internalNameByDisplayName, fallbackByInternalName),
+    notes: findInternalName(["NOTES", "Notes", "COMMENTS", "Comments"], internalNameByDisplayName, fallbackByInternalName)
+  };
+
+  const mappingTable = [
+    ["Title", fieldMap.foiaNumber],
+    ["STATUS", fieldMap.status],
+    ["DIVISION", fieldMap.division],
+    ["FOIR TYPE", fieldMap.foirType],
+    ["FOIA TYPE", fieldMap.foiaType],
+    ["Attachments", fieldMap.attachments],
+    ["DATE STAMPED", fieldMap.dateStamped],
+    ["DATE DCI RECEIVED", fieldMap.dateReceived],
+    ["Created", fieldMap.created],
+    ["5 Days Out", fieldMap.fiveDaysOut],
+    ["10 Days Out", fieldMap.tenDaysOut],
+    ["RESPONSE", fieldMap.response],
+    ["DCI WORK UNIT", fieldMap.workUnit],
+    ["Assigned to", fieldMap.assignedTo],
+    ["SUBJECT NAME", fieldMap.subjectName],
+    ["CRIMEPAD CASE #", fieldMap.crimepadCase],
+    ["TRACS CASE #", fieldMap.tracsCase],
+    ["OTHER CASE #", fieldMap.otherCase],
+    ["Modified", fieldMap.modified]
+  ];
+
+  console.table(
+    mappingTable.map(([visibleName, internalName]) => ({
+      visibleName,
+      internalName: internalName || "(unmapped)"
+    }))
+  );
+
+  return fieldMap;
+}
+
+function renderFieldMappingDiagnostics(fieldMap) {
+  const diagnosticsSection = document.querySelector(".connection-diagnostics");
+  if (!diagnosticsSection) {
+    return;
+  }
+
+  let mappingBlock = document.getElementById("diagFieldMappings");
+  if (!mappingBlock) {
+    mappingBlock = document.createElement("div");
+    mappingBlock.id = "diagFieldMappings";
+    mappingBlock.className = "diag-field-mappings";
+    diagnosticsSection.appendChild(mappingBlock);
+  }
+
+  const lines = [
+    ["Title", fieldMap.foiaNumber],
+    ["STATUS", fieldMap.status],
+    ["FOIA TYPE", fieldMap.foiaType],
+    ["DATE DCI RECEIVED", fieldMap.dateReceived],
+    ["5 Days Out", fieldMap.fiveDaysOut],
+    ["10 Days Out", fieldMap.tenDaysOut],
+    ["RESPONSE", fieldMap.response],
+    ["DCI WORK UNIT", fieldMap.workUnit],
+    ["Assigned to", fieldMap.assignedTo],
+    ["SUBJECT NAME", fieldMap.subjectName],
+    ["CRIMEPAD CASE #", fieldMap.crimepadCase],
+    ["TRACS CASE #", fieldMap.tracsCase],
+    ["OTHER CASE #", fieldMap.otherCase],
+    ["Modified", fieldMap.modified]
+  ]
+    .map(([visibleName, internalName]) => `${escapeHtml(visibleName)} -> ${escapeHtml(internalName || "(unmapped)")}`)
+    .join("<br>");
+
+  mappingBlock.innerHTML = `<h4>Temporary Field Mapping Diagnostics</h4><div>${lines}</div>`;
+}
+
+function readMappedValue(fields, internalName) {
+  if (!internalName) {
+    return undefined;
+  }
+  return fields?.[internalName];
+}
+
+function normalizeGraphFieldText(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeGraphFieldText(entry)).filter(Boolean).join(", ");
+  }
+  if (typeof value === "object") {
+    return String(
+      value.displayName ||
+      value.LookupValue ||
+      value.email ||
+      value.title ||
+      value.Label ||
+      value.value ||
+      ""
+    ).trim();
+  }
+  return String(value).trim();
+}
+
+function readMappedText(fields, internalName) {
+  return normalizeGraphFieldText(readMappedValue(fields, internalName));
+}
+
+function readMappedChoice(fields, internalName) {
+  const value = readMappedValue(fields, internalName);
+  if (Array.isArray(value)) {
+    return value.map((entry) => normalizeGraphFieldText(entry)).filter(Boolean).join(", ");
+  }
+  return normalizeGraphFieldText(value);
+}
+
+function readMappedDate(fields, internalName) {
+  const value = readMappedValue(fields, internalName);
+  const normalizedText = normalizeGraphFieldText(value);
+  if (!normalizedText) {
+    return "";
+  }
+  const parsed = new Date(normalizedText);
+  if (Number.isNaN(parsed.getTime())) {
+    return "";
+  }
+  return parsed.toISOString();
+}
+
+function normalizePersonEntry(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  if (typeof value === "number") {
+    return String(value);
+  }
+  if (typeof value === "object") {
+    const text = value.displayName || value.email || value.LookupValue || value.title || "";
+    if (text) {
+      return String(text).trim();
+    }
+
+    const lookupId = value.id || value.lookupId || value.LookupId || value.Id;
+    if (lookupId !== undefined && lookupId !== null) {
+      return String(lookupId);
     }
   }
   return "";
 }
 
-function normalizeFieldValue(value) {
+function readMappedPerson(fields, internalName, itemId) {
+  const value = readMappedValue(fields, internalName);
   if (value === undefined || value === null) {
     return "";
   }
+
   if (Array.isArray(value)) {
-    return value.map((item) => normalizeFieldValue(item)).filter(Boolean).join(", ");
+    const entries = value.map((entry) => normalizePersonEntry(entry)).filter(Boolean);
+    if (entries.length) {
+      return entries.join(", ");
+    }
+    warnOnce("assigned-to-array-requires-expansion", "Assigned to field returned array values that require person expansion.", {
+      itemId,
+      field: internalName
+    });
+    return "";
   }
+
   if (typeof value === "object") {
-    return value.displayName || value.email || value.title || value.LookupValue || value.Label || "";
+    const normalized = normalizePersonEntry(value);
+    if (normalized) {
+      if (/^\d+$/.test(normalized)) {
+        warnOnce("assigned-to-lookup-id", "Assigned to value appears to be a lookup ID. Person expansion is required.", {
+          itemId,
+          field: internalName,
+          lookupId: normalized
+        });
+      }
+      return normalized;
+    }
+
+    warnOnce("assigned-to-object-requires-expansion", "Assigned to field returned object data that requires person expansion.", {
+      itemId,
+      field: internalName
+    });
+    return "";
   }
+
+  if (typeof value === "number") {
+    warnOnce("assigned-to-numeric-lookup-id", "Assigned to field returned a numeric lookup ID. Person expansion is required.", {
+      itemId,
+      field: internalName,
+      lookupId: value
+    });
+    return String(value);
+  }
+
   return String(value).trim();
 }
 
-function collectFieldNames(items) {
-  const names = new Set();
-  items.forEach((item) => {
-    Object.keys(item.fields || {}).forEach((key) => names.add(key));
-  });
-  return Array.from(names).sort((a, b) => a.localeCompare(b));
+function determineDueDate(values) {
+  if (values.explicitDueDate) {
+    return values.explicitDueDate;
+  }
+
+  if (values.fiveDaysOut && values.tenDaysOut) {
+    const five = new Date(values.fiveDaysOut);
+    const ten = new Date(values.tenDaysOut);
+    if (!Number.isNaN(five.getTime()) && !Number.isNaN(ten.getTime()) && ten > five) {
+      warnOnce(
+        "due-date-inferred-from-thresholds",
+        "Due date is being inferred from 10 Days Out and 5 Days Out values. Confirm this behavior matches your SharePoint deadline semantics."
+      );
+      return ten.toISOString();
+    }
+  }
+
+  return "";
+}
+
+function warnOnce(key, message, details) {
+  if (devWarningFlags.has(key)) {
+    return;
+  }
+  devWarningFlags.add(key);
+  if (details) {
+    console.warn(message, details);
+    return;
+  }
+  console.warn(message);
+}
+
+function logFieldMappingValidationSummary(items, records) {
+  const summary = {
+    totalItemsRetrieved: items.length,
+    recordsWithMappedWorkUnits: records.filter((record) => String(record.dci_work_unit || "").trim() && record.dci_work_unit !== "Unknown").length,
+    recordsWithMappedStatuses: records.filter((record) => String(record.status || "").trim() && record.status !== "Unknown").length,
+    recordsWithReceivedDates: records.filter((record) => Boolean(record.received_date)).length,
+    recordsWithFiveDaysOutValues: records.filter((record) => Boolean(record.five_days_out)).length,
+    recordsWithTenDaysOutValues: records.filter((record) => Boolean(record.ten_days_out)).length,
+    recordsWithSubjectNames: records.filter((record) => String(record.subject || "").trim()).length,
+    recordsWithAssignedUsers: records.filter((record) => String(record.assigned_to || "").trim()).length
+  };
+
+  console.log("SharePoint mapping validation summary", summary);
 }
 
 function getPreferredAccount() {
@@ -1124,18 +1517,25 @@ function normalizeWorkUnit(value) {
 }
 
 function normalizeStatus(status) {
-  const normalized = String(status || "Open").trim().toLowerCase();
-  if (normalized === "closed") {
+  const normalized = String(status || "").trim().toLowerCase();
+  if (!normalized) {
+    return "Unknown";
+  }
+  if (normalized === "closed" || normalized === "complete" || normalized === "completed") {
     return "Closed";
   }
   if (normalized === "in review") {
     return "In Review";
   }
-  return "Open";
+  if (normalized === "open" || normalized === "pending" || normalized === "active") {
+    return "Open";
+  }
+  return String(status).trim();
 }
 
 function isOpenStatus(status) {
-  return status !== "Closed";
+  const normalized = String(status || "").trim().toLowerCase();
+  return normalized === "open" || normalized === "in review" || normalized === "pending" || normalized === "active";
 }
 
 function parseDate(value) {
