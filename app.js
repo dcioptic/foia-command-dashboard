@@ -37,14 +37,32 @@ const DCI_WORK_UNITS = [
 ];
 
 const ALL_WORK_UNITS_OPTION = "ALL";
+const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
+const SHAREPOINT_TARGET = {
+  siteUrl: "https://ilgov.sharepoint.com/teams/ISP.DCI.Commanders",
+  listPathContains: "/Lists/DCI%20FOIA/",
+  expectedDisplayName: "DCI FOIA"
+};
+const GRAPH_SCOPES = ["User.Read", "Sites.Read.All"];
+const LIVE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 const state = {
   records: [],
+  availableWorkUnits: [],
   scopedRecords: [],
   filteredRecords: [],
   selectedId: null,
   selectedWorkUnit: ALL_WORK_UNITS_OPTION,
-  searchQuery: ""
+  searchQuery: "",
+  diagnostics: {
+    authStatus: "Not signed in",
+    signedInUser: "N/A",
+    siteResolved: false,
+    listResolved: false,
+    liveItemsLoaded: 0,
+    dataSource: "None",
+    lastUpdated: null
+  }
 };
 
 const elements = {
@@ -64,18 +82,40 @@ const elements = {
   searchInput: document.getElementById("searchInput"),
   workUnitFilter: document.getElementById("workUnitFilter"),
   darkModeToggle: document.getElementById("darkModeToggle"),
-  presentationToggle: document.getElementById("presentationToggle")
+  presentationToggle: document.getElementById("presentationToggle"),
+  signInButton: document.getElementById("signInButton"),
+  connectionStatusMessage: document.getElementById("connectionStatusMessage"),
+  diagAuthStatus: document.getElementById("diagAuthStatus"),
+  diagSignedInUser: document.getElementById("diagSignedInUser"),
+  diagSiteResolved: document.getElementById("diagSiteResolved"),
+  diagListResolved: document.getElementById("diagListResolved"),
+  diagLiveItemsLoaded: document.getElementById("diagLiveItemsLoaded"),
+  diagDataSource: document.getElementById("diagDataSource"),
+  diagLastUpdated: document.getElementById("diagLastUpdated"),
+  lastUpdatedValue: document.getElementById("lastUpdatedValue"),
+  refreshNowButton: document.getElementById("refreshNowButton")
 };
 
 const today = startOfDay(new Date());
+let msalClient = null;
+let liveRefreshTimerId = null;
+let liveRefreshInProgress = false;
 
 initialize();
 
 async function initialize() {
   attachEventListeners();
-  await loadData();
-  populateWorkUnitFilter();
-  applyFilters();
+  renderDiagnostics();
+  showStatusMessage("Sign in with Microsoft to load live SharePoint data.", "");
+  setTableMessage("Sign in with Microsoft to load live SharePoint data.");
+  try {
+    await initializeMsal();
+    await trySilentLiveLoad();
+  } catch (error) {
+    console.error("MSAL initialization failed.", error);
+    showStatusMessage(`Authentication setup failed: ${extractErrorMessage(error)}`, "error");
+    await loadDemoData(`Authentication setup failed: ${extractErrorMessage(error)}`);
+  }
 }
 
 function attachEventListeners() {
@@ -102,29 +142,452 @@ function attachEventListeners() {
       ? "Exit Presentation Mode"
       : "Presentation Mode";
   });
+
+  elements.signInButton.addEventListener("click", async () => {
+    await handleSignInClick();
+  });
+
+  elements.refreshNowButton.addEventListener("click", async () => {
+    await refreshLiveData({ reason: "manual", showBusyState: true, fallbackToDemoOnFailure: false, keepCurrentDataOnFailure: true });
+  });
 }
 
-async function loadData() {
+async function initializeMsal() {
+  if (!window.msal || !window.SHAREPOINT_GRAPH_CONFIG?.msalConfig) {
+    throw new Error("MSAL configuration is missing. Update graph-config.js with the Microsoft Entra app settings.");
+  }
+
+  msalClient = new window.msal.PublicClientApplication(window.SHAREPOINT_GRAPH_CONFIG.msalConfig);
+  await msalClient.initialize();
+}
+
+async function trySilentLiveLoad() {
+  const account = getPreferredAccount();
+  if (!account) {
+    return;
+  }
+
+  msalClient.setActiveAccount(account);
+  updateAuthDiagnostics(account, "Signed in");
+
+  try {
+    await refreshLiveData({ reason: "startup", showBusyState: false, fallbackToDemoOnFailure: true, keepCurrentDataOnFailure: false });
+    startLiveRefreshSchedule();
+  } catch (error) {
+    await handleLiveLoadFailure(error, {
+      fallbackToDemo: true,
+      keepCurrentData: false,
+      nonIntrusive: false,
+      reason: "startup"
+    });
+  }
+}
+
+async function handleSignInClick() {
+  elements.signInButton.disabled = true;
+  elements.signInButton.textContent = "Signing in...";
+
+  try {
+    const loginResult = await msalClient.loginPopup({
+      scopes: GRAPH_SCOPES,
+      prompt: "select_account"
+    });
+
+    const account = loginResult.account;
+    msalClient.setActiveAccount(account);
+    updateAuthDiagnostics(account, "Signed in");
+    await refreshLiveData({ reason: "signin", showBusyState: false, fallbackToDemoOnFailure: true, keepCurrentDataOnFailure: false });
+    startLiveRefreshSchedule();
+  } catch (error) {
+    await handleLiveLoadFailure(error, {
+      fallbackToDemo: true,
+      keepCurrentData: false,
+      nonIntrusive: false,
+      reason: "signin"
+    });
+  } finally {
+    elements.signInButton.disabled = false;
+    elements.signInButton.textContent = "Sign in with Microsoft";
+  }
+}
+
+async function refreshLiveData(options = {}) {
+  const {
+    reason = "scheduled",
+    showBusyState = false,
+    fallbackToDemoOnFailure = false,
+    keepCurrentDataOnFailure = true
+  } = options;
+
+  if (liveRefreshInProgress) {
+    return;
+  }
+
+  liveRefreshInProgress = true;
+  if (showBusyState) {
+    elements.refreshNowButton.disabled = true;
+    elements.refreshNowButton.textContent = "Refreshing...";
+  }
+
+  try {
+    await loadLiveSharePointData();
+  } catch (error) {
+    await handleLiveLoadFailure(error, {
+      fallbackToDemo: fallbackToDemoOnFailure,
+      keepCurrentData: keepCurrentDataOnFailure,
+      nonIntrusive: reason === "scheduled" || reason === "manual",
+      reason
+    });
+  } finally {
+    liveRefreshInProgress = false;
+    if (showBusyState) {
+      elements.refreshNowButton.disabled = false;
+      elements.refreshNowButton.textContent = "Refresh Now";
+    }
+  }
+}
+
+async function loadLiveSharePointData() {
+  const token = await acquireGraphAccessToken();
+  const site = await resolveSiteByUrl(token, SHAREPOINT_TARGET.siteUrl);
+  state.diagnostics.siteResolved = true;
+
+  const list = await resolveListByWebUrl(token, site.id, SHAREPOINT_TARGET);
+  state.diagnostics.listResolved = true;
+
+  const items = await fetchAllListItems(token, site.id, list.id);
+  const fieldInternalNames = collectFieldNames(items);
+
+  console.log("SharePoint live-data diagnostics", {
+    siteId: site.id,
+    listId: list.id,
+    listDisplayName: list.displayName,
+    listWebUrl: list.webUrl,
+    itemCount: items.length,
+    availableFieldInternalNames: fieldInternalNames
+  });
+
+  state.diagnostics.liveItemsLoaded = items.length;
+  state.diagnostics.dataSource = "SharePoint";
+  state.diagnostics.lastUpdated = new Date();
+  showStatusMessage("Live SharePoint data connected", "live");
+  renderDiagnostics();
+
+  const graphRecords = items.map((item) => mapGraphItemToRecord(item));
+  setDashboardRecords(graphRecords);
+}
+
+async function handleLiveLoadFailure(error, options = {}) {
+  const {
+    fallbackToDemo = false,
+    keepCurrentData = true,
+    nonIntrusive = true,
+    reason = "scheduled"
+  } = options;
+
+  console.error("SharePoint authentication or loading failed.", error);
+  const message = extractErrorMessage(error);
+  const statusTone = nonIntrusive ? "warning" : "error";
+  showStatusMessage(`Connection failed: ${message}`, statusTone);
+
+  if (!keepCurrentData) {
+    state.diagnostics.siteResolved = false;
+    state.diagnostics.listResolved = false;
+    state.diagnostics.liveItemsLoaded = 0;
+  }
+
+  if (!fallbackToDemo && keepCurrentData) {
+    const failureLabel = reason === "manual" ? "Manual refresh failed" : "Automatic refresh failed";
+    showStatusMessage(`${failureLabel}: ${message}. Current data remains visible.`, "warning");
+  }
+
+  renderDiagnostics();
+
+  if (fallbackToDemo) {
+    await loadDemoData(message);
+  }
+}
+
+async function acquireGraphAccessToken() {
+  const account = getPreferredAccount();
+  if (!account) {
+    throw new Error("No signed-in account. Use Sign in with Microsoft.");
+  }
+
+  try {
+    const tokenResult = await msalClient.acquireTokenSilent({ account, scopes: GRAPH_SCOPES });
+    return tokenResult.accessToken;
+  } catch (error) {
+    if (!isInteractionRequired(error)) {
+      throw error;
+    }
+    const tokenResult = await msalClient.acquireTokenPopup({ account, scopes: GRAPH_SCOPES });
+    return tokenResult.accessToken;
+  }
+}
+
+async function graphFetch(token, url) {
+  const response = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json"
+    }
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Graph request failed (${response.status}): ${message}`);
+  }
+
+  return response.json();
+}
+
+async function resolveSiteByUrl(token, siteUrl) {
+  const parsed = new URL(siteUrl);
+  const sitePath = parsed.pathname;
+  const endpoint = `${GRAPH_ROOT}/sites/${parsed.hostname}:${sitePath}`;
+  const site = await graphFetch(token, endpoint);
+  console.log("Resolved SharePoint site", { siteId: site.id, siteWebUrl: site.webUrl || siteUrl });
+  return site;
+}
+
+async function resolveListByWebUrl(token, siteId, target) {
+  const endpoint = `${GRAPH_ROOT}/sites/${encodeURIComponent(siteId)}/lists?$select=id,displayName,webUrl`;
+  const payload = await graphFetch(token, endpoint);
+  const lists = payload.value || [];
+
+  const normalizedTargetPath = target.listPathContains.toLowerCase();
+  const normalizedDecodedTargetPath = decodeURIComponent(target.listPathContains).toLowerCase();
+
+  const byWebUrl = lists.find((list) => {
+    const normalizedWebUrl = String(list.webUrl || "").toLowerCase();
+    return normalizedWebUrl.includes(normalizedTargetPath) || normalizedWebUrl.includes(normalizedDecodedTargetPath);
+  });
+
+  const byName = lists.find((list) => String(list.displayName || "").toLowerCase() === target.expectedDisplayName.toLowerCase());
+  const resolved = byWebUrl || byName;
+
+  if (!resolved) {
+    throw new Error(`Unable to resolve list with path ${target.listPathContains} or name ${target.expectedDisplayName}.`);
+  }
+
+  console.log("Resolved SharePoint list", { id: resolved.id, displayName: resolved.displayName, webUrl: resolved.webUrl });
+
+  return resolved;
+}
+
+async function fetchAllListItems(token, siteId, listId) {
+  const encodedSiteId = encodeURIComponent(siteId);
+  const encodedListId = encodeURIComponent(listId);
+  let nextUrl = `${GRAPH_ROOT}/sites/${encodedSiteId}/lists/${encodedListId}/items?$expand=fields&$top=200`;
+  const allItems = [];
+
+  while (nextUrl) {
+    const page = await graphFetch(token, nextUrl);
+    allItems.push(...(page.value || []));
+    nextUrl = page["@odata.nextLink"] || null;
+  }
+
+  return allItems;
+}
+
+function mapGraphItemToRecord(item) {
+  const fields = item.fields || {};
+  return {
+    request_id: pickFirstField(fields, ["request_id", "requestId", "RequestID", "FOIANumber", "Title"]) || `ITEM-${item.id}`,
+    dci_work_unit: pickFirstField(fields, ["dci_work_unit", "DCIWorkUnit", "WorkUnit"]),
+    requester: pickFirstField(fields, ["requester", "Requester", "RequesterName"]),
+    subject: pickFirstField(fields, ["subject", "Subject", "Title"]),
+    received_date: pickFirstField(fields, ["received_date", "ReceivedDate", "DateReceived", "Created"]),
+    due_date: pickFirstField(fields, ["due_date", "DueDate", "DateDue"]),
+    status: pickFirstField(fields, ["status", "Status"]),
+    assigned_to: pickFirstField(fields, ["assigned_to", "AssignedTo", "Owner"]),
+    last_update: pickFirstField(fields, ["last_update", "LastUpdate", "Modified"]),
+    closed_date: pickFirstField(fields, ["closed_date", "ClosedDate", "DateClosed"]),
+    notes: pickFirstField(fields, ["notes", "Notes", "Comments"])
+  };
+}
+
+function pickFirstField(fields, candidates) {
+  for (const key of candidates) {
+    const normalized = normalizeFieldValue(fields[key]);
+    if (normalized) {
+      return normalized;
+    }
+  }
+  return "";
+}
+
+function normalizeFieldValue(value) {
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeFieldValue(item)).filter(Boolean).join(", ");
+  }
+  if (typeof value === "object") {
+    return value.displayName || value.email || value.title || value.LookupValue || value.Label || "";
+  }
+  return String(value).trim();
+}
+
+function collectFieldNames(items) {
+  const names = new Set();
+  items.forEach((item) => {
+    Object.keys(item.fields || {}).forEach((key) => names.add(key));
+  });
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
+}
+
+function getPreferredAccount() {
+  if (!msalClient) {
+    return null;
+  }
+  return msalClient.getActiveAccount() || msalClient.getAllAccounts()[0] || null;
+}
+
+function updateAuthDiagnostics(account, statusText) {
+  state.diagnostics.authStatus = statusText;
+  state.diagnostics.signedInUser = account?.username || account?.name || "N/A";
+  renderDiagnostics();
+}
+
+function showStatusMessage(message, typeClass) {
+  elements.connectionStatusMessage.textContent = message;
+  elements.connectionStatusMessage.classList.remove("error", "demo", "live", "warning");
+  if (typeClass) {
+    elements.connectionStatusMessage.classList.add(typeClass);
+  }
+}
+
+function renderDiagnostics() {
+  elements.diagAuthStatus.textContent = state.diagnostics.authStatus;
+  elements.diagSignedInUser.textContent = state.diagnostics.signedInUser;
+  elements.diagSiteResolved.textContent = state.diagnostics.siteResolved ? "Yes" : "No";
+  elements.diagListResolved.textContent = state.diagnostics.listResolved ? "Yes" : "No";
+  elements.diagLiveItemsLoaded.textContent = String(state.diagnostics.liveItemsLoaded);
+  elements.diagDataSource.textContent = state.diagnostics.dataSource;
+  const lastUpdatedText = formatDateTime(state.diagnostics.lastUpdated);
+  elements.diagLastUpdated.textContent = lastUpdatedText;
+  elements.lastUpdatedValue.textContent = lastUpdatedText;
+}
+
+function setTableMessage(message) {
+  elements.foiaTableBody.innerHTML = `<tr><td colspan="8">${escapeHtml(message)}</td></tr>`;
+}
+
+function setDashboardRecords(rawRecords) {
+  const previousWorkUnit = state.selectedWorkUnit;
+  const previousSelectedId = state.selectedId;
+
+  state.records = rawRecords.map((record) => normalizeRecord(record));
+  state.availableWorkUnits = buildAvailableWorkUnits(state.records);
+
+  if (previousWorkUnit === ALL_WORK_UNITS_OPTION || state.availableWorkUnits.includes(previousWorkUnit)) {
+    state.selectedWorkUnit = previousWorkUnit;
+  } else {
+    state.selectedWorkUnit = ALL_WORK_UNITS_OPTION;
+  }
+
+  state.selectedId = previousSelectedId;
+  populateWorkUnitFilter();
+  elements.workUnitFilter.value = state.selectedWorkUnit;
+  applyFilters();
+}
+
+async function loadDemoData(reason) {
   try {
     const response = await fetch("foia-data.json", { cache: "no-store" });
     if (!response.ok) {
       throw new Error(`Data request failed with status ${response.status}`);
     }
-
     const rawRecords = await response.json();
-
-    state.records = rawRecords
-      .map((record) => normalizeRecord(record))
-      .filter((record) => DCI_WORK_UNITS.includes(record.dci_work_unit));
-  } catch (error) {
-    elements.foiaTableBody.innerHTML = `<tr><td colspan="8">Failed to load FOIA data: ${escapeHtml(error.message)}</td></tr>`;
+    setDashboardRecords(rawRecords);
+    state.diagnostics.dataSource = "Demo";
+    state.diagnostics.liveItemsLoaded = 0;
+    renderDiagnostics();
+    showStatusMessage(`Demo data currently displayed. ${reason}`, "demo");
+  } catch (fallbackError) {
+    state.records = [];
+    state.availableWorkUnits = [];
+    populateWorkUnitFilter();
+    applyFilters();
+    showStatusMessage(`Failed to load demo data: ${extractErrorMessage(fallbackError)}`, "error");
+    console.error("Demo fallback loading failed.", fallbackError);
   }
+}
+
+function extractErrorMessage(error) {
+  if (!error) {
+    return "Unknown error";
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (error.message) {
+    return error.message;
+  }
+  return "Unknown error";
+}
+
+function isInteractionRequired(error) {
+  if (!error) {
+    return false;
+  }
+  if (window.msal?.InteractionRequiredAuthError && error instanceof window.msal.InteractionRequiredAuthError) {
+    return true;
+  }
+  const code = String(error.errorCode || "").toLowerCase();
+  return code.includes("interaction") || code.includes("consent") || code.includes("login");
+}
+
+function startLiveRefreshSchedule() {
+  if (liveRefreshTimerId) {
+    return;
+  }
+  liveRefreshTimerId = window.setInterval(async () => {
+    await refreshLiveData({
+      reason: "scheduled",
+      showBusyState: false,
+      fallbackToDemoOnFailure: false,
+      keepCurrentDataOnFailure: true
+    });
+  }, LIVE_REFRESH_INTERVAL_MS);
+}
+
+function formatDateTime(value) {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    return "Never";
+  }
+  return value.toLocaleString("en-US", {
+    month: "short",
+    day: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit"
+  });
+}
+
+function buildAvailableWorkUnits(records) {
+  const fromData = new Set(
+    records
+      .map((record) => String(record.dci_work_unit || "").trim())
+      .filter((value) => value)
+  );
+
+  const orderedKnown = DCI_WORK_UNITS.filter((unit) => fromData.has(unit));
+  const extras = Array.from(fromData)
+    .filter((unit) => !DCI_WORK_UNITS.includes(unit))
+    .sort((a, b) => a.localeCompare(b));
+
+  return [...orderedKnown, ...extras];
 }
 
 function populateWorkUnitFilter() {
   elements.workUnitFilter.innerHTML = [
     `<option value="${ALL_WORK_UNITS_OPTION}">All DCI Work Units</option>`,
-    ...DCI_WORK_UNITS.map((workUnit) => `<option value="${escapeHtml(workUnit)}">${escapeHtml(workUnit)}</option>`)
+    ...state.availableWorkUnits.map((workUnit) => `<option value="${escapeHtml(workUnit)}">${escapeHtml(workUnit)}</option>`)
   ].join("");
 }
 
@@ -204,7 +667,7 @@ function renderKpis() {
 
 function renderWorkUnitSummary() {
   const unitsToRender = state.selectedWorkUnit === ALL_WORK_UNITS_OPTION
-    ? DCI_WORK_UNITS
+    ? state.availableWorkUnits
     : [state.selectedWorkUnit];
 
   const rows = unitsToRender
@@ -409,10 +872,7 @@ function normalizeRecord(record) {
 
 function normalizeWorkUnit(value) {
   const normalized = String(value || "").trim();
-  if (DCI_WORK_UNITS.includes(normalized)) {
-    return normalized;
-  }
-  return "Unknown";
+  return normalized || "Unknown";
 }
 
 function normalizeStatus(status) {
@@ -431,22 +891,37 @@ function isOpenStatus(status) {
 }
 
 function parseDate(value) {
+  if (!value) {
+    return null;
+  }
   const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
   return startOfDay(date);
 }
 
 function startOfDay(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
   const copy = new Date(date);
   copy.setHours(0, 0, 0, 0);
   return copy;
 }
 
 function daysBetween(first, second) {
+  if (!(first instanceof Date) || Number.isNaN(first.getTime()) || !(second instanceof Date) || Number.isNaN(second.getTime())) {
+    return 0;
+  }
   const millisecondsPerDay = 86400000;
   return Math.round((startOfDay(second) - startOfDay(first)) / millisecondsPerDay);
 }
 
 function daysUntil(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return Number.POSITIVE_INFINITY;
+  }
   return daysBetween(today, date);
 }
 
@@ -462,6 +937,9 @@ function formatDate(date) {
 }
 
 function formatDueIn(days) {
+  if (!Number.isFinite(days)) {
+    return "Due date unavailable";
+  }
   if (days < 0) {
     return `${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"} overdue`;
   }
@@ -472,6 +950,9 @@ function formatDueIn(days) {
 }
 
 function formatDueInShort(days) {
+  if (!Number.isFinite(days)) {
+    return "N/A";
+  }
   if (days < 0) {
     return `${Math.abs(days)} overdue`;
   }
