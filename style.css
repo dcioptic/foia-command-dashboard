@@ -57,7 +57,9 @@ body {
   background:
     linear-gradient(140deg, rgba(16, 47, 79, 0.96) 0%, rgba(9, 32, 54, 0.95) 68%, rgba(131, 97, 30, 0.84) 100%),
     var(--panel);
-  box-shadow: var(--shadow);
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.08),
+    var(--shadow);
   min-height: 152px;
   padding: 0.66rem 0.95rem;
 }
@@ -88,7 +90,7 @@ body.dark .top-header {
   top: 50%;
   transform: translate(-50%, -50%);
   text-align: center;
-  width: min(980px, calc(100% - 420px));
+  width: min(860px, calc(100% - 510px));
   padding-left: 0;
 }
 
@@ -98,7 +100,7 @@ body.dark .top-header {
   grid-template-columns: auto auto;
   justify-content: end;
   align-items: center;
-  gap: 0.48rem;
+  gap: 0.38rem;
   min-width: 0;
 }
 
@@ -115,21 +117,52 @@ body.dark .top-header {
   gap: 0;
 }
 
-h1 {
+.header-center h1 {
   margin: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.02rem;
+  width: fit-content;
+  margin: 0 auto;
   font-size: clamp(1rem, 1.55vw, 1.55rem);
   font-weight: 700;
   color: #f1f6fc;
-  white-space: nowrap;
-  line-height: 1.05;
+  line-height: 0.98;
   letter-spacing: 0.01em;
+  text-align: center;
+}
+
+.header-center h1::after {
+  content: "";
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  margin: 0.2rem auto 0;
+  border-bottom: 1px solid rgba(179, 135, 40, 0.72);
+}
+
+.title-line {
+  display: block;
+  white-space: nowrap;
+}
+
+.title-line-primary {
+  font-size: clamp(0.84rem, 1.08vw, 1rem);
+  letter-spacing: 0.04em;
+}
+
+.title-line-secondary {
+  font-size: clamp(1.05rem, 1.7vw, 1.65rem);
+  font-weight: 800;
 }
 
 .header-logo {
   display: grid;
   place-items: center;
-  width: 106px;
-  height: 106px;
+  width: 118px;
+  height: 118px;
 }
 
 .header-logo-image {
@@ -144,9 +177,9 @@ h1 {
   flex-direction: column;
   justify-content: center;
   align-items: stretch;
-  gap: 0.34rem;
+  gap: 0.24rem;
   margin-top: 0;
-  width: 152px;
+  width: 140px;
 }
 
 .header-actions .btn {
@@ -158,11 +191,11 @@ h1 {
   border: 1px solid rgba(205, 221, 237, 0.45);
   background: rgba(255, 255, 255, 0.14);
   color: #ecf4ff;
-  padding: 0.5rem 0.78rem;
+  padding: 0.38rem 0.68rem;
   border-radius: 999px;
   cursor: pointer;
   font-weight: 700;
-  font-size: 0.79rem;
+  font-size: 0.76rem;
 }
 
 .btn:hover {
@@ -307,6 +340,31 @@ body.dark .filter-control select {
 
 .summary-table-wrap {
   max-height: 320px;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+.summary-table-wrap table {
+  table-layout: fixed;
+}
+
+.summary-table-wrap th,
+.summary-table-wrap td {
+  padding: 0.45rem 0.55rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  line-height: 1.2;
+}
+
+.summary-table-wrap th:first-child,
+.summary-table-wrap td:first-child {
+  width: 43%;
+}
+
+.summary-table-wrap th:not(:first-child),
+.summary-table-wrap td:not(:first-child) {
+  width: 11.4%;
 }
 
 .foia-table-wrap {
@@ -758,12 +816,12 @@ body.presentation-mode .detail-content h3 {
 
   .header-center {
     padding-left: 0;
-    width: min(820px, calc(100% - 320px));
+    width: min(760px, calc(100% - 360px));
   }
 
   .header-logo {
-    width: 84px;
-    height: 84px;
+    width: 92px;
+    height: 92px;
   }
 
   .header-logo-image {
@@ -774,7 +832,7 @@ body.presentation-mode .detail-content h3 {
   .header-actions {
     justify-content: center;
     flex-wrap: nowrap;
-    width: 132px;
+    width: 128px;
   }
 
   .header-right {
