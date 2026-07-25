@@ -248,6 +248,27 @@
                 <span>Search</span>
                 <input id="searchInput" type="search" placeholder="Search by FOIA number, subject, DCI work unit, or status" autocomplete="off">
               </label>
+              <div class="request-local-filter-bar" aria-label="FOIA table filters and sorting">
+                <label class="filter-control" for="tableWorkUnitFilter">
+                  <span>DCI Work Unit</span>
+                  <select id="tableWorkUnitFilter" aria-label="Filter FOIA table by DCI Work Unit">
+                    <option value="ALL">All Work Units</option>
+                  </select>
+                </label>
+                <label class="filter-control" for="tableStatusFilter">
+                  <span>Exact Status</span>
+                  <select id="tableStatusFilter" aria-label="Filter FOIA table by exact status">
+                    <option value="ALL_STATUSES">All Statuses</option>
+                  </select>
+                </label>
+                <label class="filter-control" for="tableReceivedSort">
+                  <span>Date DCI Received</span>
+                  <select id="tableReceivedSort" aria-label="Sort FOIA table by date DCI received">
+                    <option value="RECEIVED_NEWEST">Newest First</option>
+                    <option value="RECEIVED_OLDEST">Oldest First</option>
+                  </select>
+                </label>
+              </div>
             </div>
             <div class="panel-body panel-body-scroll request-panel-body">
               <div class="table-wrap foia-table-wrap">

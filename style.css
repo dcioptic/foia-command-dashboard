@@ -1160,6 +1160,18 @@ body.dark .search-box input {
   color: var(--text);
 }
 
+.request-local-filter-bar {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.08rem;
+}
+
+.request-local-filter-bar .filter-control {
+  min-width: 0;
+}
+
 @media (max-width: 1300px) {
   .auth-card-inner {
     padding: 2rem 1.7rem 1.8rem;
@@ -1234,6 +1246,10 @@ body.dark .search-box input {
     align-items: flex-start;
   }
 
+  .request-local-filter-bar {
+    grid-template-columns: repeat(2, minmax(160px, 1fr));
+  }
+
   .panel-header-filters {
     align-items: flex-start;
   }
@@ -1262,6 +1278,10 @@ body.dark .search-box input {
 
 @media (max-width: 720px) {
   .requests-row {
+    grid-template-columns: 1fr;
+  }
+
+  .request-local-filter-bar {
     grid-template-columns: 1fr;
   }
 

@@ -43,6 +43,8 @@ const OFFICIAL_WORK_UNIT_BY_KEY = new Map(
 const ALL_WORK_UNITS_OPTION = "ALL";
 const ALL_STATUSES_OPTION = "ALL_STATUSES";
 const ALL_TIME_OPTION = "ALL_TIME";
+const LOCAL_RECEIVED_SORT_NEWEST = "RECEIVED_NEWEST";
+const LOCAL_RECEIVED_SORT_OLDEST = "RECEIVED_OLDEST";
 const STATUS_FILTER_ALL_LABEL = "All Statuses";
 const FALLBACK_STATUS_CHOICES = [
   "1. NEW",
@@ -78,6 +80,11 @@ const state = {
   scopedRecords: [],
   filteredRecords: [],
   selectedId: null,
+  tableSelectedWorkUnit: ALL_WORK_UNITS_OPTION,
+  tableSelectedStatus: ALL_STATUSES_OPTION,
+  tableReceivedSort: LOCAL_RECEIVED_SORT_NEWEST,
+  tableAvailableWorkUnits: [],
+  tableAvailableStatuses: [],
   selectedWorkUnit: ALL_WORK_UNITS_OPTION,
   selectedStatus: ALL_STATUSES_OPTION,
   availableStatuses: [...FALLBACK_STATUS_CHOICES],
@@ -142,6 +149,9 @@ const elements = {
   foiaTableBody: document.getElementById("foiaTableBody"),
   detailContent: document.getElementById("detailContent"),
   searchInput: document.getElementById("searchInput"),
+  tableWorkUnitFilter: document.getElementById("tableWorkUnitFilter"),
+  tableStatusFilter: document.getElementById("tableStatusFilter"),
+  tableReceivedSort: document.getElementById("tableReceivedSort"),
   workUnitFilter: document.getElementById("workUnitFilter"),
   statusFilter: document.getElementById("statusFilter"),
   timePeriodFilter: document.getElementById("timePeriodFilter"),
@@ -218,6 +228,21 @@ function attachCoreEventListeners() {
 
   elements.searchInput.addEventListener("input", (event) => {
     state.searchQuery = event.target.value;
+    applyFilters();
+  });
+
+  elements.tableWorkUnitFilter.addEventListener("change", (event) => {
+    state.tableSelectedWorkUnit = event.target.value;
+    applyFilters();
+  });
+
+  elements.tableStatusFilter.addEventListener("change", (event) => {
+    state.tableSelectedStatus = event.target.value;
+    applyFilters();
+  });
+
+  elements.tableReceivedSort.addEventListener("change", (event) => {
+    state.tableReceivedSort = event.target.value;
     applyFilters();
   });
 
@@ -1703,6 +1728,8 @@ function clearDashboardData(options = {}) {
   state.scopedRecords = [];
   state.filteredRecords = [];
   state.selectedId = null;
+  state.tableAvailableWorkUnits = [];
+  state.tableAvailableStatuses = [];
   state.availableStatuses = [...FALLBACK_STATUS_CHOICES];
 
   if (!preserveFilters) {
@@ -1719,6 +1746,7 @@ function clearDashboardData(options = {}) {
   elements.customStartDate.value = state.customStartDate;
   elements.customEndDate.value = state.customEndDate;
   elements.searchInput.value = state.searchQuery;
+  populateTableLocalFilters(state.filteredRecords);
 
   if (render) {
     renderAll();
@@ -1951,6 +1979,35 @@ function buildAvailableStatuses(records, baselineChoices) {
   return [...orderedKnown, ...extras];
 }
 
+function buildPresentStatuses(records) {
+  const normalizedToDisplay = new Map();
+  records.forEach((record) => {
+    const statusText = String(record.status || "").trim();
+    if (!statusText) {
+      return;
+    }
+    const key = statusKey(statusText);
+    if (!normalizedToDisplay.has(key)) {
+      normalizedToDisplay.set(key, statusText);
+    }
+  });
+
+  const remaining = new Map(normalizedToDisplay);
+  const orderedKnown = [];
+
+  KPI_STATUS_ORDER.forEach((preferredStatus) => {
+    const preferredKey = statusKey(preferredStatus);
+    if (!remaining.has(preferredKey)) {
+      return;
+    }
+    orderedKnown.push(remaining.get(preferredKey));
+    remaining.delete(preferredKey);
+  });
+
+  const extras = Array.from(remaining.values()).sort((a, b) => a.localeCompare(b));
+  return [...orderedKnown, ...extras];
+}
+
 function resolveStatusOptionValue(value, availableStatuses) {
   if (value === ALL_STATUSES_OPTION) {
     return ALL_STATUSES_OPTION;
@@ -1971,6 +2028,78 @@ function populateStatusFilter() {
     `<option value="${ALL_STATUSES_OPTION}">${STATUS_FILTER_ALL_LABEL}</option>`,
     ...state.availableStatuses.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`)
   ].join("");
+}
+
+function populateTableLocalFilters(records) {
+  state.tableAvailableWorkUnits = buildAvailableWorkUnits(records);
+  state.tableAvailableStatuses = buildPresentStatuses(records);
+
+  if (
+    state.tableSelectedWorkUnit !== ALL_WORK_UNITS_OPTION
+    && !state.tableAvailableWorkUnits.includes(state.tableSelectedWorkUnit)
+  ) {
+    state.tableSelectedWorkUnit = ALL_WORK_UNITS_OPTION;
+  }
+
+  if (
+    state.tableSelectedStatus !== ALL_STATUSES_OPTION
+    && !state.tableAvailableStatuses.some((status) => statusEquals(status, state.tableSelectedStatus))
+  ) {
+    state.tableSelectedStatus = ALL_STATUSES_OPTION;
+  }
+
+  elements.tableWorkUnitFilter.innerHTML = [
+    `<option value="${ALL_WORK_UNITS_OPTION}">All Work Units</option>`,
+    ...state.tableAvailableWorkUnits.map(
+      (workUnit) => `<option value="${escapeHtml(workUnit)}">${escapeHtml(workUnit)}</option>`
+    )
+  ].join("");
+
+  elements.tableStatusFilter.innerHTML = [
+    `<option value="${ALL_STATUSES_OPTION}">${STATUS_FILTER_ALL_LABEL}</option>`,
+    ...state.tableAvailableStatuses.map((status) => `<option value="${escapeHtml(status)}">${escapeHtml(status)}</option>`)
+  ].join("");
+
+  elements.tableWorkUnitFilter.value = state.tableSelectedWorkUnit;
+  elements.tableStatusFilter.value = resolveStatusOptionValue(state.tableSelectedStatus, state.tableAvailableStatuses);
+  elements.tableReceivedSort.value = state.tableReceivedSort;
+}
+
+function getReceivedDateSortValue(record) {
+  const rawValue = record?.received_date;
+  if (!rawValue) {
+    return null;
+  }
+
+  const timeValue = rawValue instanceof Date ? rawValue.getTime() : new Date(rawValue).getTime();
+  return Number.isFinite(timeValue) ? timeValue : null;
+}
+
+function sortRecordsByReceivedDate(records, direction) {
+  const sortDirection = direction === LOCAL_RECEIVED_SORT_OLDEST
+    ? LOCAL_RECEIVED_SORT_OLDEST
+    : LOCAL_RECEIVED_SORT_NEWEST;
+
+  return [...records].sort((a, b) => {
+    const aDate = getReceivedDateSortValue(a);
+    const bDate = getReceivedDateSortValue(b);
+
+    if (aDate === null && bDate === null) {
+      return String(a.request_id || "").localeCompare(String(b.request_id || ""));
+    }
+    if (aDate === null) {
+      return 1;
+    }
+    if (bDate === null) {
+      return -1;
+    }
+
+    if (sortDirection === LOCAL_RECEIVED_SORT_OLDEST) {
+      return aDate - bDate;
+    }
+
+    return bDate - aDate;
+  });
 }
 
 function applyFilters() {
@@ -2001,7 +2130,7 @@ function applyFilters() {
 
   state.scopedRecords = [...state.baseFilteredRecords];
 
-  state.filteredRecords = state.baseFilteredRecords.filter((record) => {
+  const searchedRecords = state.baseFilteredRecords.filter((record) => {
     if (!normalizedQuery) {
       return true;
     }
@@ -2015,6 +2144,28 @@ function applyFilters() {
 
     return searchable.includes(normalizedQuery);
   });
+
+  populateTableLocalFilters(searchedRecords);
+
+  const locallyFilteredRecords = searchedRecords.filter((record) => {
+    if (
+      state.tableSelectedWorkUnit !== ALL_WORK_UNITS_OPTION
+      && !recordHasWorkUnit(record, state.tableSelectedWorkUnit)
+    ) {
+      return false;
+    }
+
+    if (
+      state.tableSelectedStatus !== ALL_STATUSES_OPTION
+      && !statusEquals(record.status, state.tableSelectedStatus)
+    ) {
+      return false;
+    }
+
+    return true;
+  });
+
+  state.filteredRecords = sortRecordsByReceivedDate(locallyFilteredRecords, state.tableReceivedSort);
 
   if (!state.filteredRecords.some((item) => getRecordIdentity(item) === state.selectedId)) {
     state.selectedId = getRecordIdentity(state.filteredRecords[0]) || null;
