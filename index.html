@@ -55,7 +55,6 @@
           <div class="header-actions">
             <button id="signOutButton" class="btn btn-signin" type="button" aria-label="Sign out of Microsoft">Sign Out</button>
             <button id="darkModeToggle" class="btn" type="button" aria-label="Toggle dark mode">Dark Mode</button>
-            <button id="presentationToggle" class="btn btn-accent" type="button" aria-label="Toggle presentation mode">Presentation Mode</button>
           </div>
         </div>
 
@@ -212,76 +211,88 @@
             <p class="summary-note">Work-unit totals may exceed the DCI-wide total because FOIAs involving multiple work units are counted once for each participating unit.</p>
           </article>
 
-          <article class="panel trend-panel">
-            <div class="panel-header">
-              <h2>DCI Received vs. DCI Completed</h2>
-            </div>
-            <div class="table-wrap trend-table-wrap">
-              <table aria-label="DCI received versus completed trend">
-                <thead>
-                  <tr>
-                    <th>Period</th>
-                    <th>DCI Received</th>
-                    <th>DCI Completed</th>
-                  </tr>
-                </thead>
-                <tbody id="trendTableBody"></tbody>
-              </table>
-            </div>
-          </article>
+          <div class="analytics-row">
+            <article class="panel trend-panel">
+              <div class="panel-header">
+                <h2>DCI Received vs. DCI Completed</h2>
+              </div>
+              <div class="panel-body panel-body-scroll trend-panel-body">
+                <div class="table-wrap trend-table-wrap">
+                  <table aria-label="DCI received versus completed trend">
+                    <thead>
+                      <tr>
+                        <th>Period</th>
+                        <th>DCI Received</th>
+                        <th>DCI Completed</th>
+                      </tr>
+                    </thead>
+                    <tbody id="trendTableBody"></tbody>
+                  </table>
+                </div>
+              </div>
+            </article>
 
-          <article class="panel deadlines-panel">
-            <div class="panel-header">
-              <h2>Upcoming Deadlines</h2>
-            </div>
-            <ul id="upcomingDeadlines" class="deadline-list" aria-label="Upcoming deadlines"></ul>
-          </article>
+            <article class="panel deadlines-panel">
+              <div class="panel-header">
+                <h2>Upcoming Deadlines</h2>
+              </div>
+              <div class="panel-body panel-body-scroll deadlines-panel-body">
+                <ul id="upcomingDeadlines" class="deadline-list" aria-label="Upcoming deadlines"></ul>
+              </div>
+            </article>
 
-          <article class="panel alerts-panel">
-            <div class="panel-header">
-              <h2>Command Alerts</h2>
-            </div>
-            <ul id="commandAlerts" class="alerts-list" aria-label="Command alerts"></ul>
-          </article>
+            <article class="panel alerts-panel">
+              <div class="panel-header">
+                <h2>Command Alerts</h2>
+              </div>
+              <div class="panel-body panel-body-scroll alerts-panel-body">
+                <ul id="commandAlerts" class="alerts-list" aria-label="Command alerts"></ul>
+              </div>
+            </article>
+          </div>
         </section>
 
-        <section class="panel request-panel">
-          <div class="panel-header panel-header-stacked">
-            <h2>FOIA Requests</h2>
-            <label class="search-box" for="searchInput">
-              <span>Search</span>
-              <input id="searchInput" type="search" placeholder="Search by FOIA number, requester, subject, DCI work unit, or status" autocomplete="off">
-            </label>
-          </div>
-          <div class="table-wrap foia-table-wrap">
-            <table aria-label="FOIA request table">
-              <thead>
-                <tr>
-                  <th>FOIA Number</th>
-                  <th>Subject</th>
-                  <th>Requester</th>
-                  <th>DCI Work Unit</th>
-                  <th>Exact Status</th>
-                  <th>Date DCI Received</th>
-                  <th>Due Date</th>
-                  <th>Date Closed</th>
-                  <th>Days In Progress / Days To Complete</th>
-                </tr>
-              </thead>
-              <tbody id="foiaTableBody"></tbody>
-            </table>
-          </div>
+        <section class="requests-row">
+          <section class="panel request-panel">
+            <div class="panel-header panel-header-stacked">
+              <h2>FOIA Requests</h2>
+              <label class="search-box" for="searchInput">
+                <span>Search</span>
+                <input id="searchInput" type="search" placeholder="Search by FOIA number, requester, subject, DCI work unit, or status" autocomplete="off">
+              </label>
+            </div>
+            <div class="panel-body panel-body-scroll request-panel-body">
+              <div class="table-wrap foia-table-wrap">
+                <table aria-label="FOIA request table">
+                  <thead>
+                    <tr>
+                      <th>FOIA Number</th>
+                      <th>Subject</th>
+                      <th>Requester</th>
+                      <th>DCI Work Unit</th>
+                      <th>Exact Status</th>
+                      <th>Date DCI Received</th>
+                      <th>Due Date</th>
+                      <th>Date Closed</th>
+                      <th>Days In Progress / Days To Complete</th>
+                    </tr>
+                  </thead>
+                  <tbody id="foiaTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <aside class="detail-panel panel" aria-live="polite">
+            <div class="panel-header">
+              <h2>Request Details</h2>
+            </div>
+            <div id="detailContent" class="detail-content panel-body panel-body-scroll">
+              <p class="placeholder">Select a FOIA request to view detailed information.</p>
+            </div>
+          </aside>
         </section>
       </section>
-
-      <aside class="detail-panel panel" aria-live="polite">
-        <div class="panel-header">
-          <h2>Request Details</h2>
-        </div>
-        <div id="detailContent" class="detail-content">
-          <p class="placeholder">Select a FOIA request to view detailed information.</p>
-        </div>
-      </aside>
     </main>
   </div>
 

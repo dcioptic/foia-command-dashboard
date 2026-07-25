@@ -142,7 +142,6 @@ const elements = {
   customEndDate: document.getElementById("customEndDate"),
   clearFiltersButton: document.getElementById("clearFiltersButton"),
   darkModeToggle: document.getElementById("darkModeToggle"),
-  presentationToggle: document.getElementById("presentationToggle"),
   signOutButton: document.getElementById("signOutButton"),
   refreshNowButton: document.getElementById("refreshNowButton"),
   connectionStatusMessage: document.getElementById("connectionStatusMessage"),
@@ -255,14 +254,6 @@ function attachCoreEventListeners() {
     document.body.classList.toggle("dark");
     elements.darkModeToggle.setAttribute("aria-pressed", String(document.body.classList.contains("dark")));
     elements.darkModeToggle.textContent = document.body.classList.contains("dark") ? "Light Mode" : "Dark Mode";
-  });
-
-  elements.presentationToggle.addEventListener("click", () => {
-    document.body.classList.toggle("presentation-mode");
-    elements.presentationToggle.setAttribute("aria-pressed", String(document.body.classList.contains("presentation-mode")));
-    elements.presentationToggle.textContent = document.body.classList.contains("presentation-mode")
-      ? "Exit Presentation Mode"
-      : "Presentation Mode";
   });
 
   elements.refreshNowButton.addEventListener("click", async () => {
@@ -471,7 +462,6 @@ async function loadLiveSharePointData() {
   const fieldMap = buildSharePointFieldMap(columns);
   state.liveConnection.fieldMap = fieldMap;
   state.availableStatuses = deriveStatusChoices(columns, fieldMap.status);
-  renderFieldMappingDiagnostics(fieldMap);
 
   const items = await fetchAllListItems(token, site.id, list.id);
   console.log("Number of list items returned:", items.length);
@@ -994,42 +984,6 @@ function buildSharePointFieldMap(columns) {
   return fieldMap;
 }
 
-function renderFieldMappingDiagnostics(fieldMap) {
-  const diagnosticsSection = document.querySelector(".connection-diagnostics");
-  if (!diagnosticsSection) {
-    return;
-  }
-
-  let mappingBlock = document.getElementById("diagFieldMappings");
-  if (!mappingBlock) {
-    mappingBlock = document.createElement("div");
-    mappingBlock.id = "diagFieldMappings";
-    mappingBlock.className = "diag-field-mappings";
-    diagnosticsSection.appendChild(mappingBlock);
-  }
-
-  const lines = [
-    ["Title", fieldMap.foiaNumber],
-    ["STATUS", fieldMap.status],
-    ["FOIA TYPE", fieldMap.foiaType],
-    ["DATE DCI RECEIVED", fieldMap.dateReceived],
-    ["5 Days Out", fieldMap.fiveDaysOut],
-    ["10 Days Out", fieldMap.tenDaysOut],
-    ["RESPONSE", fieldMap.response],
-    ["DCI WORK UNIT", fieldMap.workUnit],
-    ["Assigned to", fieldMap.assignedTo],
-    ["SUBJECT NAME", fieldMap.subjectName],
-    ["CRIMEPAD CASE #", fieldMap.crimepadCase],
-    ["TRACS CASE #", fieldMap.tracsCase],
-    ["OTHER CASE #", fieldMap.otherCase],
-    ["Modified", fieldMap.modified]
-  ]
-    .map(([visibleName, internalName]) => `${escapeHtml(visibleName)} -> ${escapeHtml(internalName || "(unmapped)")}`)
-    .join("<br>");
-
-  mappingBlock.innerHTML = `<h4>Temporary Field Mapping Diagnostics</h4><div>${lines}</div>`;
-}
-
 function readMappedValue(fields, internalName) {
   if (!internalName) {
     return undefined;
@@ -1401,7 +1355,7 @@ function setAppView(view, overrides = {}) {
     loading: {
       ...baseConfig,
       heading: "Loading Live FOIA Data...",
-      primaryMessage: "Loading live FOIA data...",
+      primaryMessage: "",
       secondaryMessage: "Authenticating your session and retrieving the required SharePoint records.",
       primaryAction: null,
       secondaryAction: null,
@@ -1591,6 +1545,7 @@ function setDashboardRecords(rawRecords) {
   state.records = rawRecords.map((record) => normalizeRecord(record));
   state.availableWorkUnits = buildAvailableWorkUnits(state.records);
   logWorkUnitValidationSummary(state.records, state.availableWorkUnits.length);
+  logDueDateValidationSummary(state.records);
   state.availableStatuses = buildAvailableStatuses(state.records, state.availableStatuses);
 
   if (previousWorkUnit === ALL_WORK_UNITS_OPTION || state.availableWorkUnits.includes(previousWorkUnit)) {
@@ -1785,26 +1740,13 @@ function renderKpis() {
   const now = new Date();
 
   const statusCounts = KPI_STATUS_ORDER.map((statusLabel) => countByStatus(records, statusLabel));
-  const activeRecords = records.filter((record) => isOpenStageStatus(record.status));
+  const inProgressRecords = records.filter((record) => isInProgressMetricEligible(record));
+  const dueToday = records.filter((record) => isDueToday(record));
+  const due5 = records.filter((record) => isDueInFiveDays(record));
+  const due10 = records.filter((record) => isDueInTenDays(record));
+  const overdue = records.filter((record) => isOverdue(record));
 
-  const dueToday = activeRecords.filter((record) => hasValidDueDate(record) && daysUntil(record.due_date) === 0);
-  const due5 = activeRecords.filter((record) => {
-    if (!hasValidDueDate(record)) {
-      return false;
-    }
-    const delta = daysUntil(record.due_date);
-    return delta >= 1 && delta <= 5;
-  });
-  const due10 = activeRecords.filter((record) => {
-    if (!hasValidDueDate(record)) {
-      return false;
-    }
-    const delta = daysUntil(record.due_date);
-    return delta >= 6 && delta <= 10;
-  });
-  const overdue = activeRecords.filter((record) => hasValidDueDate(record) && daysUntil(record.due_date) < 0);
-
-  const inProgressDurations = activeRecords
+  const inProgressDurations = inProgressRecords
     .map((record) => daysInProgress(record))
     .filter((days) => Number.isFinite(days));
   const avgDaysInProgress = inProgressDurations.length
@@ -1820,10 +1762,10 @@ function renderKpis() {
   elements.kpiStatusPendingLegal.textContent = String(statusCounts[2]);
   elements.kpiStatusUnitResponded.textContent = String(statusCounts[3]);
   elements.kpiStatusCompleted.textContent = String(statusCounts[4]);
-  elements.kpiDue10.textContent = String(state.selectedStatus === COMPLETED_STATUS ? 0 : due10.length);
-  elements.kpiDue5.textContent = String(state.selectedStatus === COMPLETED_STATUS ? 0 : due5.length);
-  elements.kpiDueToday.textContent = String(state.selectedStatus === COMPLETED_STATUS ? 0 : dueToday.length);
-  elements.kpiOverdue.textContent = String(state.selectedStatus === COMPLETED_STATUS ? 0 : overdue.length);
+  elements.kpiDue10.textContent = String(due10.length);
+  elements.kpiDue5.textContent = String(due5.length);
+  elements.kpiDueToday.textContent = String(dueToday.length);
+  elements.kpiOverdue.textContent = String(overdue.length);
   elements.kpiAvgDaysInProgress.textContent = String(avgDaysInProgress);
   elements.kpiReceivedThisMonth.textContent = String(receivedThisMonth);
   elements.kpiCompletedThisMonth.textContent = String(completedThisMonth);
@@ -1844,24 +1786,12 @@ function renderWorkUnitSummary() {
     .map((workUnit) => {
       const unitRecords = records.filter((record) => recordHasWorkUnit(record, workUnit));
       const statusCounts = statusColumns.map((status) => unitRecords.filter((record) => statusEquals(record.status, status)).length);
-      const activeRecords = unitRecords.filter((record) => isOpenStageStatus(record.status));
-      const due10 = activeRecords.filter((record) => {
-        if (!hasValidDueDate(record)) {
-          return false;
-        }
-        const delta = daysUntil(record.due_date);
-        return delta >= 6 && delta <= 10;
-      }).length;
-      const due5 = activeRecords.filter((record) => {
-        if (!hasValidDueDate(record)) {
-          return false;
-        }
-        const delta = daysUntil(record.due_date);
-        return delta >= 1 && delta <= 5;
-      }).length;
-      const dueToday = activeRecords.filter((record) => hasValidDueDate(record) && daysUntil(record.due_date) === 0).length;
-      const overdue = activeRecords.filter((record) => hasValidDueDate(record) && daysUntil(record.due_date) < 0).length;
-      const durations = activeRecords.map((record) => daysInProgress(record)).filter((days) => Number.isFinite(days));
+      const inProgressRecords = unitRecords.filter((record) => isInProgressMetricEligible(record));
+      const due10 = unitRecords.filter((record) => isDueInTenDays(record)).length;
+      const due5 = unitRecords.filter((record) => isDueInFiveDays(record)).length;
+      const dueToday = unitRecords.filter((record) => isDueToday(record)).length;
+      const overdue = unitRecords.filter((record) => isOverdue(record)).length;
+      const durations = inProgressRecords.map((record) => daysInProgress(record)).filter((days) => Number.isFinite(days));
       const avgDays = durations.length ? Math.round(durations.reduce((sum, days) => sum + days, 0) / durations.length) : 0;
 
       const monthUnitScope = monthScopeRecords.filter((record) => recordHasWorkUnit(record, workUnit));
@@ -1928,13 +1858,12 @@ function renderTrendPanel() {
 
 function renderCommandAlerts() {
   const records = state.scopedRecords;
-  const activeRecords = records.filter((record) => isOpenStageStatus(record.status));
   const monthScopeRecords = getCurrentMonthMetricScopeRecords();
 
-  const due10 = activeRecords.filter((record) => hasValidDueDate(record) && daysUntil(record.due_date) >= 6 && daysUntil(record.due_date) <= 10).length;
-  const due5 = activeRecords.filter((record) => hasValidDueDate(record) && daysUntil(record.due_date) >= 1 && daysUntil(record.due_date) <= 5).length;
-  const dueToday = activeRecords.filter((record) => hasValidDueDate(record) && daysUntil(record.due_date) === 0).length;
-  const overdue = activeRecords.filter((record) => hasValidDueDate(record) && daysUntil(record.due_date) < 0).length;
+  const due10 = records.filter((record) => isDueInTenDays(record)).length;
+  const due5 = records.filter((record) => isDueInFiveDays(record)).length;
+  const dueToday = records.filter((record) => isDueToday(record)).length;
+  const overdue = records.filter((record) => isOverdue(record)).length;
   const respondedWorkUnits = new Set(
     records
       .filter((record) => statusEquals(record.status, "4. WORK UNIT RESPONDED"))
@@ -1948,17 +1877,17 @@ function renderCommandAlerts() {
     <li class="alert-item"><div class="alert-title">Requests Currently In Progress</div><div class="alert-value">${countByStatus(records, "2. IN PROGRESS")}</div></li>
     <li class="alert-item"><div class="alert-title">Requests Pending With Legal</div><div class="alert-value">${countByStatus(records, "3. PENDING WITH LEGAL")}</div></li>
     <li class="alert-item"><div class="alert-title">Work Units That Have Responded</div><div class="alert-value">${respondedWorkUnits.size}</div></li>
-    <li class="alert-item"><div class="alert-title">Due in 10 Days</div><div class="alert-value">${state.selectedStatus === COMPLETED_STATUS ? 0 : due10}</div></li>
-    <li class="alert-item"><div class="alert-title">Due in 5 Days</div><div class="alert-value">${state.selectedStatus === COMPLETED_STATUS ? 0 : due5}</div></li>
-    <li class="alert-item"><div class="alert-title">Due Today</div><div class="alert-value">${state.selectedStatus === COMPLETED_STATUS ? 0 : dueToday}</div></li>
-    <li class="alert-item"><div class="alert-title">Overdue</div><div class="alert-value">${state.selectedStatus === COMPLETED_STATUS ? 0 : overdue}</div></li>
+    <li class="alert-item"><div class="alert-title">Due in 10 Days</div><div class="alert-value">${due10}</div></li>
+    <li class="alert-item"><div class="alert-title">Due in 5 Days</div><div class="alert-value">${due5}</div></li>
+    <li class="alert-item"><div class="alert-title">Due Today</div><div class="alert-value">${dueToday}</div></li>
+    <li class="alert-item"><div class="alert-title">Overdue</div><div class="alert-value">${overdue}</div></li>
     <li class="alert-item"><div class="alert-title">DCI Completed This Month</div><div class="alert-value">${completedThisMonth}</div></li>
   `;
 }
 
 function renderUpcomingDeadlines() {
   const upcoming = state.scopedRecords
-    .filter((record) => isOpenStageStatus(record.status) && hasValidDueDate(record))
+    .filter((record) => isDeadlineEligible(record))
     .map((record) => ({
       ...record,
       dueInDays: daysUntil(record.due_date)
@@ -1997,13 +1926,13 @@ function renderRequestTable() {
   elements.foiaTableBody.innerHTML = state.filteredRecords.map((record) => {
     const selectedClass = record.request_id === state.selectedId ? "selected" : "";
     const statusClass = `status-${statusClassSuffix(record.status)}`;
-    const completed = isCompletedStatus(record.status);
+    const completed = isDciCompleted(record);
     const daysOpen = daysInProgress(record);
     const daysClose = daysToClose(record);
     const dueDelta = daysUntil(record.due_date);
     const timingText = completed
       ? formatNumericMetric(daysClose)
-      : `${formatNumericMetric(daysOpen)}${Number.isFinite(dueDelta) ? ` (${formatDueInShort(dueDelta)})` : ""}`;
+      : `${formatNumericMetric(daysOpen)}${hasValidDueDate(record) ? ` (${formatDueInShort(record, dueDelta)})` : ""}`;
 
     return `
       <tr data-request-id="${escapeHtml(record.request_id)}" class="${selectedClass}" tabindex="0">
@@ -2045,7 +1974,7 @@ function renderDetailPanel() {
     return;
   }
 
-  const completed = isCompletedStatus(selected.status);
+  const completed = isDciCompleted(selected);
   const dueInDays = daysUntil(selected.due_date);
   const closeDays = daysToClose(selected);
   const details = [
@@ -2061,7 +1990,7 @@ function renderDetailPanel() {
   }
 
   if (!completed && selected.due_date) {
-    details.push(["Due Date", `${formatDate(selected.due_date)} (${formatDueIn(dueInDays)})`]);
+    details.push(["Due Date", `${formatDate(selected.due_date)} (${formatDueIn(selected, dueInDays)})`]);
   }
   if (completed && selected.closed_date) {
     details.push(["Date Closed", formatDate(selected.closed_date)]);
@@ -2146,11 +2075,32 @@ function normalizeStatus(status) {
 }
 
 function statusKey(value) {
-  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^(\d+)\s*\.\s*/, "$1. ")
+    .replace(/\s+/g, " ");
 }
 
 function statusEquals(a, b) {
   return statusKey(a) === statusKey(b);
+}
+
+function normalizeStatusForComparison(status) {
+  return String(status || "")
+    .trim()
+    .toLowerCase()
+    .replace(/^\d+\s*\.\s*/, "")
+    .replace(/\s+/g, " ");
+}
+
+function startOfToday() {
+  return today;
+}
+
+function isDciCompleted(record) {
+  const status = typeof record === "object" && record !== null ? record.status : record;
+  return normalizeStatusForComparison(status) === "dci completed";
 }
 
 function isOpenStageStatus(status) {
@@ -2158,7 +2108,40 @@ function isOpenStageStatus(status) {
 }
 
 function isCompletedStatus(status) {
-  return statusEquals(status, COMPLETED_STATUS);
+  return isDciCompleted(status);
+}
+
+function isDeadlineEligible(record) {
+  return hasValidDueDate(record) && !isDciCompleted(record);
+}
+
+function isDueToday(record) {
+  return isDeadlineEligible(record) && daysUntil(record.due_date) === 0;
+}
+
+function isDueInFiveDays(record) {
+  if (!isDeadlineEligible(record)) {
+    return false;
+  }
+  const delta = daysUntil(record.due_date);
+  return delta >= 1 && delta <= 5;
+}
+
+function isDueInTenDays(record) {
+  if (!isDeadlineEligible(record)) {
+    return false;
+  }
+  const delta = daysUntil(record.due_date);
+  return delta >= 6 && delta <= 10;
+}
+
+function isOverdue(record) {
+  const dueDate = parseDate(record?.dueDate || record?.due_date);
+  return Boolean(dueDate) && dueDate < startOfToday() && !isDciCompleted(record);
+}
+
+function isInProgressMetricEligible(record) {
+  return !isDciCompleted(record);
 }
 
 function getIntakeDate(record) {
@@ -2170,13 +2153,10 @@ function getProgressStartDate(record) {
 }
 
 function getRecordTimeFilterDate(record) {
-  if (isCompletedStatus(record.status)) {
+  if (isDciCompleted(record)) {
     return record.closed_date || null;
   }
-  if (isOpenStageStatus(record.status)) {
-    return record.received_date || null;
-  }
-  return null;
+  return getIntakeDate(record);
 }
 
 function getTimePeriodRange(period) {
@@ -2290,6 +2270,9 @@ function hasValidDueDate(record) {
 }
 
 function daysInProgress(record) {
+  if (!isInProgressMetricEligible(record)) {
+    return Number.NaN;
+  }
   const startDate = getProgressStartDate(record);
   if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
     return Number.NaN;
@@ -2430,7 +2413,7 @@ function daysUntil(date) {
   if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
     return Number.POSITIVE_INFINITY;
   }
-  return daysBetween(today, date);
+  return daysBetween(startOfToday(), date);
 }
 
 function formatDate(date) {
@@ -2444,11 +2427,11 @@ function formatDate(date) {
   });
 }
 
-function formatDueIn(days) {
+function formatDueIn(record, days) {
   if (!Number.isFinite(days)) {
     return "Due date unavailable";
   }
-  if (days < 0) {
+  if (isOverdue(record)) {
     return `${Math.abs(days)} day${Math.abs(days) === 1 ? "" : "s"} overdue`;
   }
   if (days === 0) {
@@ -2457,17 +2440,36 @@ function formatDueIn(days) {
   return `Due in ${days} day${days === 1 ? "" : "s"}`;
 }
 
-function formatDueInShort(days) {
+function formatDueInShort(record, days) {
   if (!Number.isFinite(days)) {
     return "N/A";
   }
-  if (days < 0) {
+  if (isOverdue(record)) {
     return `${Math.abs(days)} overdue`;
   }
   if (days === 0) {
     return "Due today";
   }
   return String(days);
+}
+
+function logDueDateValidationSummary(records) {
+  const recordsWithValidDueDates = records.filter((record) => hasValidDueDate(record)).length;
+  const dciCompletedRecords = records.filter((record) => isDciCompleted(record)).length;
+  const nonCompletedPastDueRecords = records.filter((record) => {
+    if (!hasValidDueDate(record) || isDciCompleted(record)) {
+      return false;
+    }
+    return parseDate(record.due_date) < startOfToday();
+  }).length;
+  const finalOverdueCount = records.filter((record) => isOverdue(record)).length;
+
+  console.info("Due date validation summary", {
+    totalRecordsWithValidDueDates: recordsWithValidDueDates,
+    recordsWithStatusDciCompleted: dciCompletedRecords,
+    nonDciCompletedRecordsWithPastDueDates: nonCompletedPastDueRecords,
+    finalOverdueCount
+  });
 }
 
 function escapeHtml(value) {
