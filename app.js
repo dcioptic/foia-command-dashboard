@@ -482,6 +482,7 @@ async function loadLiveSharePointData() {
 
   const graphRecords = items.map((item) => mapGraphItemToRecord(item, fieldMap));
   logFieldMappingValidationSummary(items, graphRecords);
+  logFoiaNumberValidationSummary(items, graphRecords);
 
   state.diagnostics.liveItemsLoaded = items.length;
   state.diagnostics.dataSource = "SharePoint";
@@ -749,7 +750,7 @@ function getLiveLoadFailureMessage(error) {
 
 function mapGraphItemToRecord(item, fieldMap) {
   const fields = item?.fields || {};
-  const foiaNumber = readMappedText(fields, fieldMap.title) || "Not Assigned";
+  const foiaNumber = normalizeGraphFieldText(fields.Title) || "Not Assigned";
   const statusFromField = readMappedChoice(fields, fieldMap.status);
   const status = statusFromField || "Unknown";
 
@@ -940,7 +941,7 @@ function buildSharePointFieldMap(columns) {
   );
 
   const fieldMap = {
-    title: findInternalName(["Title"], internalNameByDisplayName, fallbackByInternalName),
+    title: "Title",
     status: findInternalName(["STATUS", "Status"], internalNameByDisplayName, fallbackByInternalName),
     division: findInternalName(["DIVISION", "Division"], internalNameByDisplayName, fallbackByInternalName),
     foirType: findInternalName(["FOIR TYPE", "FOIR Type"], internalNameByDisplayName, fallbackByInternalName),
@@ -1607,7 +1608,6 @@ function setDashboardRecords(rawRecords) {
   state.availableWorkUnits = buildAvailableWorkUnits(state.records);
   logWorkUnitValidationSummary(state.records, state.availableWorkUnits.length);
   logDueDateValidationSummary(state.records);
-  logFoiaNumberValidationSummary(state.records);
   state.availableStatuses = buildAvailableStatuses(state.records, state.availableStatuses);
 
   if (previousWorkUnit === ALL_WORK_UNITS_OPTION || state.availableWorkUnits.includes(previousWorkUnit)) {
@@ -2115,17 +2115,19 @@ function normalizeWorkUnit(value) {
   return getWorkUnitDisplay(getWorkUnits(value));
 }
 
-function logFoiaNumberValidationSummary(records) {
-  const recordsWithNonblankTitle = records.filter((record) => {
-    const value = String(record.request_id || "").trim();
-    return value && value !== "Not Assigned";
+function logFoiaNumberValidationSummary(items, records) {
+  const recordsWithPopulatedTitle = items.filter((item) => {
+    const title = normalizeGraphFieldText(item?.fields?.Title);
+    return Boolean(title);
   }).length;
+  const blankTitleRecords = items.filter((item) => !normalizeGraphFieldText(item?.fields?.Title)).length;
   const recordsShowingNotAssigned = records.filter((record) => String(record.request_id || "").trim() === "Not Assigned").length;
   const recordsUsingGeneratedPlaceholders = records.filter((record) => /^ITEM-\d+$/i.test(String(record.request_id || "").trim())).length;
 
   console.info("FOIA number validation summary", {
-    totalRecords: records.length,
-    recordsWithNonblankTitle,
+    totalRecords: items.length,
+    recordsWithTitlePopulated: recordsWithPopulatedTitle,
+    blankTitleRecords,
     recordsShowingNotAssigned,
     recordsStillUsingItemGeneratedPlaceholders: recordsUsingGeneratedPlaceholders
   });
