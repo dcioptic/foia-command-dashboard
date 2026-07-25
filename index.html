@@ -114,18 +114,6 @@
             <button id="refreshNowButton" class="btn btn-refresh" type="button" aria-label="Refresh SharePoint data now">Refresh Now</button>
             <span class="last-updated">Last Updated: <strong id="lastUpdatedValue">Never</strong></span>
           </div>
-          <div class="connection-diagnostics" aria-label="Connection diagnostics">
-            <h3>Connection Diagnostics</h3>
-            <ul>
-              <li><span>Authentication status</span><strong id="diagAuthStatus">Not signed in</strong></li>
-              <li><span>Signed-in user</span><strong id="diagSignedInUser">N/A</strong></li>
-              <li><span>Site resolved</span><strong id="diagSiteResolved">No</strong></li>
-              <li><span>List resolved</span><strong id="diagListResolved">No</strong></li>
-              <li><span>Live items loaded</span><strong id="diagLiveItemsLoaded">0</strong></li>
-              <li><span>Current data source</span><strong id="diagDataSource">None</strong></li>
-              <li><span>Last successful refresh</span><strong id="diagLastUpdated">Never</strong></li>
-            </ul>
-          </div>
         </section>
 
         <section class="kpi-grid" aria-label="Key performance indicators">
@@ -290,6 +278,26 @@
               <p class="placeholder">Select a FOIA request to view detailed information.</p>
             </div>
           </aside>
+        </section>
+
+        <section class="panel diagnostics-admin-panel" aria-label="Administrator diagnostics">
+          <details class="diagnostics-accordion">
+            <summary class="diagnostics-accordion-summary">
+              <span class="diagnostics-admin-title">Connection Diagnostics (Administrator)</span>
+              <span class="diagnostics-admin-note">For troubleshooting and system diagnostics only.</span>
+            </summary>
+            <div class="connection-diagnostics" aria-label="Connection diagnostics">
+              <ul>
+                <li><span>Authentication status</span><strong id="diagAuthStatus">Not signed in</strong></li>
+                <li><span>Signed-in user</span><strong id="diagSignedInUser">N/A</strong></li>
+                <li><span>Site resolved</span><strong id="diagSiteResolved">No</strong></li>
+                <li><span>List resolved</span><strong id="diagListResolved">No</strong></li>
+                <li><span>Live items loaded</span><strong id="diagLiveItemsLoaded">0</strong></li>
+                <li><span>Current data source</span><strong id="diagDataSource">None</strong></li>
+                <li><span>Last successful refresh</span><strong id="diagLastUpdated">Never</strong></li>
+              </ul>
+            </div>
+          </details>
         </section>
       </section>
     </main>

@@ -591,6 +591,63 @@ body.dark .connection-diagnostics {
   color: var(--text);
 }
 
+.diagnostics-admin-panel {
+  border-style: dashed;
+  border-color: rgba(13, 53, 88, 0.2);
+  background: rgba(255, 255, 255, 0.55);
+}
+
+body.dark .diagnostics-admin-panel {
+  border-color: rgba(156, 186, 216, 0.2);
+  background: rgba(21, 31, 42, 0.52);
+}
+
+.diagnostics-accordion {
+  width: 100%;
+}
+
+.diagnostics-accordion-summary {
+  list-style: none;
+  cursor: pointer;
+  padding: 0.8rem 0.95rem;
+  display: grid;
+  gap: 0.14rem;
+}
+
+.diagnostics-accordion-summary::-webkit-details-marker {
+  display: none;
+}
+
+.diagnostics-accordion-summary::before {
+  content: "\25B8";
+  display: inline-block;
+  margin-right: 0.45rem;
+  color: var(--muted);
+  transform-origin: center;
+  transition: transform 0.16s ease;
+}
+
+.diagnostics-accordion[open] .diagnostics-accordion-summary::before {
+  transform: rotate(90deg);
+}
+
+.diagnostics-admin-title {
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.diagnostics-admin-note {
+  font-size: 0.74rem;
+  color: var(--muted);
+  opacity: 0.88;
+}
+
+.diagnostics-accordion .connection-diagnostics {
+  margin: 0 0.95rem 0.85rem;
+}
+
 .operations-grid {
   display: grid;
   gap: 0.92rem;
