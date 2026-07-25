@@ -1705,12 +1705,9 @@ function applyFilters() {
 
     const searchable = [
       record.request_id,
-      record.requester,
       record.subject,
       record.dci_work_unit,
-      record.status,
-      record.assigned_to,
-      record.notes
+      record.status
     ].join(" ").toLowerCase();
 
     return searchable.includes(normalizedQuery);
@@ -1919,7 +1916,7 @@ function renderUpcomingDeadlines() {
 
 function renderRequestTable() {
   if (!state.filteredRecords.length) {
-    elements.foiaTableBody.innerHTML = "<tr><td colspan=\"9\">No FOIA records match your search.</td></tr>";
+    elements.foiaTableBody.innerHTML = "<tr><td colspan=\"8\">No FOIA records match your search.</td></tr>";
     return;
   }
 
@@ -1938,7 +1935,6 @@ function renderRequestTable() {
       <tr data-request-id="${escapeHtml(record.request_id)}" class="${selectedClass}" tabindex="0">
         <td>${escapeHtml(record.request_id)}</td>
         <td>${escapeHtml(record.subject)}</td>
-        <td>${escapeHtml(record.requester)}</td>
         <td>${escapeHtml(record.dci_work_unit)}</td>
         <td><span class="status-chip ${statusClass}">${escapeHtml(record.status)}</span></td>
         <td>${record.received_date ? formatDate(record.received_date) : ""}</td>
@@ -1980,7 +1976,6 @@ function renderDetailPanel() {
   const details = [
     ["FOIA Number", selected.request_id],
     ["Subject", selected.subject],
-    ["Requester", selected.requester],
     ["DCI Work Unit", selected.dci_work_unit],
     ["Exact Status", selected.status]
   ];
