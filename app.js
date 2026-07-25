@@ -2325,6 +2325,7 @@ function buildFilterSummaryText() {
 function buildTrendRows() {
   const periodRange = getTimePeriodRange(state.selectedTimePeriod);
   const customRange = getCustomDateRange(state.customStartDate, state.customEndDate);
+  const currentMonthEnd = getCurrentMonthEnd();
 
   const baseRecords = state.records.filter((record) => {
     if (state.selectedWorkUnit !== ALL_WORK_UNITS_OPTION && !recordHasWorkUnit(record, state.selectedWorkUnit)) {
@@ -2353,13 +2354,21 @@ function buildTrendRows() {
   baseRecords.forEach((record) => {
     const receivedDate = record.received_date;
     if (receivedDate instanceof Date && !Number.isNaN(receivedDate.getTime())) {
-      if (recordMatchesDateRangeByDate(receivedDate, periodRange.start, periodRange.end) && recordMatchesDateRangeByDate(receivedDate, customRange.start, customRange.end)) {
+      if (
+        recordMatchesDateRangeByDate(receivedDate, periodRange.start, periodRange.end) &&
+        recordMatchesDateRangeByDate(receivedDate, customRange.start, customRange.end) &&
+        recordMatchesDateRangeByDate(receivedDate, null, currentMonthEnd)
+      ) {
         upsertBucket(receivedDate).received += 1;
       }
     }
 
     if (isCompletedStatus(record.status) && record.closed_date instanceof Date && !Number.isNaN(record.closed_date.getTime())) {
-      if (recordMatchesDateRangeByDate(record.closed_date, periodRange.start, periodRange.end) && recordMatchesDateRangeByDate(record.closed_date, customRange.start, customRange.end)) {
+      if (
+        recordMatchesDateRangeByDate(record.closed_date, periodRange.start, periodRange.end) &&
+        recordMatchesDateRangeByDate(record.closed_date, customRange.start, customRange.end) &&
+        recordMatchesDateRangeByDate(record.closed_date, null, currentMonthEnd)
+      ) {
         upsertBucket(record.closed_date).completed += 1;
       }
     }
@@ -2379,6 +2388,10 @@ function recordMatchesDateRangeByDate(date, start, end) {
     return false;
   }
   return true;
+}
+
+function getCurrentMonthEnd() {
+  return startOfDay(new Date(today.getFullYear(), today.getMonth() + 1, 0));
 }
 
 function parseDate(value) {
