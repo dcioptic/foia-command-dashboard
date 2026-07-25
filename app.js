@@ -36,6 +36,10 @@ const DCI_WORK_UNITS = [
   "DDO FOIA Unit"
 ];
 
+const OFFICIAL_WORK_UNIT_BY_KEY = new Map(
+  DCI_WORK_UNITS.map((unit) => [normalizeWorkUnitKey(unit), unit])
+);
+
 const ALL_WORK_UNITS_OPTION = "ALL";
 const ALL_STATUSES_OPTION = "ALL_STATUSES";
 const ALL_TIME_OPTION = "ALL_TIME";
@@ -77,6 +81,7 @@ const state = {
   customStartDate: "",
   customEndDate: "",
   searchQuery: "",
+  appView: "login",
   diagnostics: {
     authStatus: "Not signed in",
     signedInUser: "N/A",
@@ -102,6 +107,14 @@ const state = {
 };
 
 const elements = {
+  authShell: document.getElementById("authShell"),
+  dashboardShell: document.getElementById("dashboardShell"),
+  authStateHeading: document.getElementById("authStateHeading"),
+  authPrimaryMessage: document.getElementById("authPrimaryMessage"),
+  authSecondaryMessage: document.getElementById("authSecondaryMessage"),
+  authSpinner: document.getElementById("authSpinner"),
+  loginSignInButton: document.getElementById("loginSignInButton"),
+  authSecondaryButton: document.getElementById("authSecondaryButton"),
   kpiStatusNew: document.getElementById("kpiStatusNew"),
   kpiStatusInProgress: document.getElementById("kpiStatusInProgress"),
   kpiStatusPendingLegal: document.getElementById("kpiStatusPendingLegal"),
@@ -130,7 +143,7 @@ const elements = {
   clearFiltersButton: document.getElementById("clearFiltersButton"),
   darkModeToggle: document.getElementById("darkModeToggle"),
   presentationToggle: document.getElementById("presentationToggle"),
-  signInButton: document.getElementById("signInButton"),
+  signOutButton: document.getElementById("signOutButton"),
   refreshNowButton: document.getElementById("refreshNowButton"),
   connectionStatusMessage: document.getElementById("connectionStatusMessage"),
   diagAuthStatus: document.getElementById("diagAuthStatus"),
@@ -147,7 +160,6 @@ const today = startOfDay(new Date());
 let msalInstance = null;
 let liveRefreshTimerId = null;
 let liveRefreshInProgress = false;
-let signInHandlerAttached = false;
 const devWarningFlags = new Set();
 
 initialize();
@@ -155,10 +167,10 @@ initialize();
 async function initialize() {
   hydrateInitialFiltersFromUrl();
   attachCoreEventListeners();
+  clearDashboardData({ preserveFilters: true, render: true });
+  setAppView("login");
   setAuthControlsEnabled(false);
   renderDiagnostics();
-  showStatusMessage("Sign in with Microsoft to load live SharePoint data.", "warning");
-  setTableMessage("Sign in with Microsoft to load live SharePoint data.");
 
   console.log("MSAL Browser loaded:", Boolean(window.msal?.PublicClientApplication));
 
@@ -169,7 +181,6 @@ async function initialize() {
 
   try {
     await initializeAuthentication();
-    ensureSignInHandlerAttached();
     setAuthControlsEnabled(true);
     await trySilentLiveLoad();
   } catch (error) {
@@ -177,13 +188,34 @@ async function initialize() {
     state.diagnostics.authStatus = "Initialization failed";
     renderDiagnostics();
     setAuthControlsEnabled(false);
-    const reason = `Authentication setup failed: ${extractErrorMessage(error)}`;
-    showStatusMessage(reason, "error");
-    setDashboardRecords([]);
+    setAppView("error", {
+      heading: "Authentication Unavailable",
+      primaryMessage: "Microsoft authentication could not be initialized for this application.",
+      secondaryMessage: "Please verify your Microsoft Entra configuration or contact the system administrator.",
+      primaryAction: null,
+      secondaryAction: null,
+      showSpinner: false
+    });
   }
 }
 
 function attachCoreEventListeners() {
+  elements.loginSignInButton.addEventListener("click", async () => {
+    await handleSignInClick();
+  });
+
+  elements.authSecondaryButton.addEventListener("click", async () => {
+    const action = elements.authSecondaryButton.dataset.action;
+    if (action === "retry") {
+      setAppView("loading");
+      await refreshLiveData({ reason: "retry", showBusyState: false });
+      return;
+    }
+    if (action === "signout") {
+      await handleSignOutClick();
+    }
+  });
+
   elements.searchInput.addEventListener("input", (event) => {
     state.searchQuery = event.target.value;
     applyFilters();
@@ -234,12 +266,11 @@ function attachCoreEventListeners() {
   });
 
   elements.refreshNowButton.addEventListener("click", async () => {
-    await refreshLiveData({
-      reason: "manual",
-      showBusyState: true,
-      fallbackToDemoOnFailure: false,
-      keepCurrentDataOnFailure: true
-    });
+    await refreshLiveData({ reason: "manual", showBusyState: true });
+  });
+
+  elements.signOutButton.addEventListener("click", async () => {
+    await handleSignOutClick();
   });
 }
 
@@ -278,16 +309,6 @@ function syncStatusQueryString() {
   const nextSearch = params.toString();
   const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ""}${window.location.hash}`;
   window.history.replaceState({}, "", nextUrl);
-}
-
-function ensureSignInHandlerAttached() {
-  if (signInHandlerAttached) {
-    return;
-  }
-  elements.signInButton.addEventListener("click", async () => {
-    await handleSignInClick();
-  });
-  signInHandlerAttached = true;
 }
 
 async function initializeAuthentication() {
@@ -333,8 +354,9 @@ async function initializeAuthentication() {
 }
 
 function setAuthControlsEnabled(enabled) {
-  elements.signInButton.disabled = !enabled;
+  elements.loginSignInButton.disabled = !enabled;
   elements.refreshNowButton.disabled = !enabled;
+  elements.signOutButton.disabled = !enabled;
 }
 
 async function trySilentLiveLoad() {
@@ -342,31 +364,36 @@ async function trySilentLiveLoad() {
   if (!account) {
     state.diagnostics.authStatus = "Ready to sign in";
     renderDiagnostics();
-    showStatusMessage("Sign in with Microsoft to load live SharePoint data.", "warning");
-    setDashboardRecords([]);
+    setAppView("login");
     return;
   }
 
   msalInstance.setActiveAccount(account);
   updateAuthDiagnostics(account, "Signed in");
+  setAppView("loading");
 
-  await refreshLiveData({
-    reason: "startup",
-    showBusyState: false,
-    fallbackToDemoOnFailure: true,
-    keepCurrentDataOnFailure: false
-  });
-  startLiveRefreshSchedule();
+  const loaded = await refreshLiveData({ reason: "startup", showBusyState: false });
+  if (loaded) {
+    startLiveRefreshSchedule();
+  }
 }
 
 async function handleSignInClick() {
   if (!msalInstance) {
-    showStatusMessage("Microsoft sign-in is unavailable because authentication initialization did not complete.", "error");
+    setAppView("error", {
+      heading: "Authentication Unavailable",
+      primaryMessage: "Microsoft sign-in is unavailable because authentication initialization did not complete.",
+      secondaryMessage: "Please reload the page or contact the system administrator.",
+      primaryAction: null,
+      secondaryAction: null,
+      showSpinner: false
+    });
     return;
   }
 
-  elements.signInButton.disabled = true;
-  elements.signInButton.textContent = "Signing in...";
+  elements.loginSignInButton.disabled = true;
+  elements.loginSignInButton.textContent = "Signing in...";
+  setAppView("loading");
 
   try {
     const loginRequest = {
@@ -378,36 +405,26 @@ async function handleSignInClick() {
     msalInstance.setActiveAccount(loginResponse.account);
     updateAuthDiagnostics(loginResponse.account, "Signed in");
 
-    await refreshLiveData({
-      reason: "signin",
-      showBusyState: false,
-      fallbackToDemoOnFailure: false,
-      keepCurrentDataOnFailure: false
-    });
-    startLiveRefreshSchedule();
+    const loaded = await refreshLiveData({ reason: "signin", showBusyState: false });
+    if (loaded) {
+      startLiveRefreshSchedule();
+    }
   } catch (error) {
-    await handleLiveLoadFailure(error, {
-      fallbackToDemo: true,
-      keepCurrentData: false,
-      nonIntrusive: false,
-      reason: "signin"
-    });
+    await handleLiveLoadFailure(error, { reason: "signin" });
   } finally {
-    elements.signInButton.disabled = false;
-    elements.signInButton.textContent = "Sign in with Microsoft";
+    elements.loginSignInButton.disabled = false;
+    elements.loginSignInButton.textContent = "Sign in with Microsoft";
   }
 }
 
 async function refreshLiveData(options = {}) {
   const {
     reason = "scheduled",
-    showBusyState = false,
-    fallbackToDemoOnFailure = false,
-    keepCurrentDataOnFailure = true
+    showBusyState = false
   } = options;
 
   if (liveRefreshInProgress) {
-    return;
+    return false;
   }
 
   liveRefreshInProgress = true;
@@ -419,13 +436,11 @@ async function refreshLiveData(options = {}) {
 
   try {
     await loadLiveSharePointData();
+    setAppView("dashboard");
+    return true;
   } catch (error) {
-    await handleLiveLoadFailure(error, {
-      fallbackToDemo: fallbackToDemoOnFailure,
-      keepCurrentData: keepCurrentDataOnFailure,
-      nonIntrusive: reason === "scheduled" || reason === "manual",
-      reason
-    });
+    await handleLiveLoadFailure(error, { reason });
+    return false;
   } finally {
     liveRefreshInProgress = false;
     if (showBusyState) {
@@ -477,60 +492,58 @@ async function loadLiveSharePointData() {
 }
 
 async function handleLiveLoadFailure(error, options = {}) {
-  const {
-    fallbackToDemo = false,
-    keepCurrentData = true,
-    nonIntrusive = true,
-    reason = "scheduled"
-  } = options;
+  const { reason = "scheduled" } = options;
 
   console.error("SharePoint authentication or loading failed.", error);
-  const message = getLiveLoadFailureMessage(error);
-  const statusTone = nonIntrusive ? "warning" : "error";
-  showStatusMessage(message, statusTone);
-
-  if (!keepCurrentData) {
-    if (error?.stage === "site") {
-      state.diagnostics.siteResolved = false;
-      state.diagnostics.listResolved = false;
-      state.liveConnection.site.id = "";
-      state.liveConnection.site.displayName = "";
-      state.liveConnection.site.webUrl = "";
-    } else if (error?.stage === "list") {
-      state.diagnostics.siteResolved = true;
-      state.diagnostics.listResolved = false;
-    } else {
-      state.diagnostics.siteResolved = false;
-      state.diagnostics.listResolved = false;
-      state.liveConnection.site.id = "";
-      state.liveConnection.site.displayName = "";
-      state.liveConnection.site.webUrl = "";
-    }
-    state.diagnostics.liveItemsLoaded = 0;
-    state.liveConnection.list.id = "";
-    state.liveConnection.list.displayName = "";
-    state.liveConnection.list.webUrl = "";
-  }
-
-  if (!fallbackToDemo && keepCurrentData) {
-    const failureLabel = reason === "manual" ? "Manual refresh failed" : "Automatic refresh failed";
-    showStatusMessage(`${failureLabel}: ${message} Current data remains visible.`, "warning");
-  }
-
+  clearDashboardData({ preserveFilters: true, render: true });
   renderDiagnostics();
 
-  if (fallbackToDemo) {
-    showStatusMessage(`${message} Live data remains required; demo data is disabled.`, "error");
-    if (!keepCurrentData) {
-      setDashboardRecords([]);
+  if (isSessionExpiredError(error)) {
+    stopLiveRefreshSchedule();
+    if (msalInstance && typeof msalInstance.setActiveAccount === "function") {
+      msalInstance.setActiveAccount(null);
     }
+    state.diagnostics.authStatus = "Session expired";
+    state.diagnostics.signedInUser = "N/A";
+    renderDiagnostics();
+    setAppView("login", {
+      heading: "Session Expired",
+      primaryMessage: "Your Microsoft session has expired.",
+      secondaryMessage: "Sign in with your Illinois.gov Microsoft account to continue.",
+      primaryAction: { label: "Sign in with Microsoft", action: "signin" },
+      secondaryAction: null,
+      showSpinner: false
+    });
+    return;
   }
+
+  if (isAccessDeniedError(error)) {
+    state.diagnostics.authStatus = "Access denied";
+    renderDiagnostics();
+    setAppView("access-denied");
+    return;
+  }
+
+  showStatusMessage(
+    "Unable to retrieve live SharePoint data. Please verify your network connection or contact the system administrator.",
+    "error"
+  );
+  setAppView("error", {
+    heading: "Unable to Retrieve Live SharePoint Data",
+    primaryMessage: "Unable to retrieve live SharePoint data.",
+    secondaryMessage: "Please verify your network connection or contact the system administrator.",
+    primaryAction: { label: "Try Again", action: "retry" },
+    secondaryAction: { label: "Sign Out", action: "signout" },
+    showSpinner: false
+  });
 }
 
 async function acquireGraphAccessToken() {
   const account = getPreferredAccount();
   if (!account) {
-    throw new Error("No signed-in account. Use Sign in with Microsoft.");
+    const error = new Error("No signed-in account. Sign in with Microsoft.");
+    error.authInteractionRequired = true;
+    throw error;
   }
 
   const scopes = getGraphScopes();
@@ -543,15 +556,10 @@ async function acquireGraphAccessToken() {
     });
     return tokenResult.accessToken;
   } catch (error) {
-    if (!isInteractionRequired(error)) {
-      throw error;
+    if (isInteractionRequired(error)) {
+      error.authInteractionRequired = true;
     }
-
-    const tokenResult = await msalInstance.acquireTokenPopup({
-      account,
-      scopes
-    });
-    return tokenResult.accessToken;
+    throw error;
   }
 }
 
@@ -748,7 +756,10 @@ function mapGraphItemToRecord(item, fieldMap) {
     warnOnce("status-mapping-missing-value", "Status field mapping returned no value for one or more records. Status mapping may need attention.");
   }
 
-  const workUnit = readMappedChoice(fields, fieldMap.workUnit);
+  const workUnits = getWorkUnits({
+    workUnit: readMappedValue(fields, fieldMap.workUnit)
+  });
+  const workUnit = getWorkUnitDisplay(workUnits);
   const subjectValue = readMappedText(fields, fieldMap.subjectName);
   const subject = subjectValue || foiaNumber;
 
@@ -778,6 +789,7 @@ function mapGraphItemToRecord(item, fieldMap) {
     fiveDaysOut,
     tenDaysOut,
     response,
+    workUnits,
     workUnit,
     assignedTo,
     subject,
@@ -793,6 +805,8 @@ function mapGraphItemToRecord(item, fieldMap) {
   return {
     request_id: normalizedRecord.foiaNumber,
     dci_work_unit: normalizedRecord.workUnit,
+    workUnits: normalizedRecord.workUnits,
+    workUnit: normalizedRecord.workUnit,
     requester,
     subject: normalizedRecord.subject,
     received_date: normalizedRecord.receivedDate,
@@ -1175,10 +1189,164 @@ function warnOnce(key, message, details) {
   console.warn(message);
 }
 
+function normalizeWorkUnitKey(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function splitDelimitedWorkUnitText(value) {
+  const normalized = String(value || "").replace(/\r?\n/g, " ").trim();
+  if (!normalized) {
+    return [];
+  }
+
+  if (normalized.includes(";#")) {
+    const parts = normalized.split(";#").map((entry) => entry.trim()).filter(Boolean);
+    return parts.filter((part, index) => !(index < parts.length - 1 && /^\d+$/.test(part)));
+  }
+
+  return normalized.split(/[;,]+/).map((entry) => entry.trim()).filter(Boolean);
+}
+
+function collectWorkUnitTokens(value, tokens) {
+  if (value === undefined || value === null) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((entry) => collectWorkUnitTokens(entry, tokens));
+    return;
+  }
+
+  if (typeof value === "object") {
+    if (Array.isArray(value.results)) {
+      collectWorkUnitTokens(value.results, tokens);
+      return;
+    }
+
+    const candidateFields = [
+      value.displayName,
+      value.LookupValue,
+      value.title,
+      value.Label,
+      value.value,
+      value.name
+    ];
+
+    candidateFields.forEach((entry) => {
+      if (entry !== undefined && entry !== null && entry !== "") {
+        collectWorkUnitTokens(entry, tokens);
+      }
+    });
+    return;
+  }
+
+  splitDelimitedWorkUnitText(value).forEach((token) => {
+    if (!/^\d+$/.test(token)) {
+      tokens.push(token);
+    }
+  });
+}
+
+function normalizeWorkUnitLabel(value) {
+  const normalized = String(value || "").trim().replace(/\s+/g, " ");
+  if (!normalized) {
+    return "";
+  }
+
+  return OFFICIAL_WORK_UNIT_BY_KEY.get(normalizeWorkUnitKey(normalized)) || normalized;
+}
+
+function getWorkUnits(record) {
+  const candidates = [];
+  if (record && typeof record === "object" && !Array.isArray(record)) {
+    candidates.push(record.workUnits, record.workUnit, record.dci_work_unit, record.work_unit);
+  } else {
+    candidates.push(record);
+  }
+
+  const uniqueUnits = new Map();
+  candidates.forEach((candidate) => {
+    const tokens = [];
+    collectWorkUnitTokens(candidate, tokens);
+    tokens.forEach((token) => {
+      const label = normalizeWorkUnitLabel(token);
+      if (!label) {
+        return;
+      }
+
+      const key = normalizeWorkUnitKey(label);
+      if (!uniqueUnits.has(key)) {
+        uniqueUnits.set(key, label);
+      }
+    });
+  });
+
+  if (!uniqueUnits.size) {
+    return ["Unknown"];
+  }
+
+  return Array.from(uniqueUnits.values());
+}
+
+function getWorkUnitDisplay(value) {
+  const workUnits = Array.isArray(value) ? value : getWorkUnits(value);
+  return workUnits.length ? workUnits.join(", ") : "Unknown";
+}
+
+function recordHasWorkUnit(record, workUnit) {
+  const targetKey = normalizeWorkUnitKey(workUnit);
+  return getWorkUnits(record).some((unit) => normalizeWorkUnitKey(unit) === targetKey);
+}
+
+function orderWorkUnits(values) {
+  const uniqueValues = Array.from(new Set(values.filter(Boolean)));
+  const orderedKnown = DCI_WORK_UNITS.filter((unit) => uniqueValues.includes(unit));
+  const extras = uniqueValues
+    .filter((unit) => !DCI_WORK_UNITS.includes(unit))
+    .sort((a, b) => a.localeCompare(b));
+
+  return [...orderedKnown, ...extras];
+}
+
+function getRecordIdentity(record) {
+  return String(record.request_id || record.foiaNumber || record.id || "").trim();
+}
+
+function logWorkUnitValidationSummary(records, generatedRowCount) {
+  const uniqueRecordIds = new Set();
+  let singleUnitCount = 0;
+  let multiUnitCount = 0;
+  let maxWorkUnits = 0;
+
+  records.forEach((record) => {
+    const recordId = getRecordIdentity(record);
+    if (recordId) {
+      uniqueRecordIds.add(recordId);
+    }
+
+    const resolvedUnits = getWorkUnits(record).filter((unit) => normalizeWorkUnitKey(unit) !== "unknown");
+    if (resolvedUnits.length === 1) {
+      singleUnitCount += 1;
+    }
+    if (resolvedUnits.length > 1) {
+      multiUnitCount += 1;
+    }
+    maxWorkUnits = Math.max(maxWorkUnits, resolvedUnits.length);
+  });
+
+  console.info("Work unit validation summary", {
+    totalUniqueFoiaRecords: uniqueRecordIds.size || records.length,
+    foiasAssignedToOneWorkUnit: singleUnitCount,
+    foiasAssignedToMultipleWorkUnits: multiUnitCount,
+    maximumWorkUnitsAssignedToOneFoia: maxWorkUnits,
+    generatedIndividualWorkUnitRows: generatedRowCount
+  });
+}
+
 function logFieldMappingValidationSummary(items, records) {
   const summary = {
     totalItemsRetrieved: items.length,
-    recordsWithMappedWorkUnits: records.filter((record) => String(record.dci_work_unit || "").trim() && record.dci_work_unit !== "Unknown").length,
+    recordsWithMappedWorkUnits: records.filter((record) => getWorkUnits(record).some((unit) => normalizeWorkUnitKey(unit) !== "unknown")).length,
     recordsWithMappedStatuses: records.filter((record) => String(record.status || "").trim() && record.status !== "Unknown").length,
     recordsWithReceivedDates: records.filter((record) => Boolean(record.received_date)).length,
     recordsWithFiveDaysOutValues: records.filter((record) => Boolean(record.five_days_out)).length,
@@ -1214,6 +1382,183 @@ function updateAuthDiagnostics(account, statusText) {
   renderDiagnostics();
 }
 
+function setAppView(view, overrides = {}) {
+  state.appView = view;
+
+  const baseConfig = {
+    heading: "Secure Access Required",
+    primaryMessage: "This application contains official law enforcement information.",
+    secondaryMessage: "You must sign in with your Illinois.gov Microsoft account to continue.",
+    primaryAction: { label: "Sign in with Microsoft", action: "signin" },
+    secondaryAction: null,
+    showSpinner: false,
+    showAuth: view !== "dashboard",
+    showDashboard: view === "dashboard"
+  };
+
+  const viewConfig = {
+    login: baseConfig,
+    loading: {
+      ...baseConfig,
+      heading: "Loading Live FOIA Data...",
+      primaryMessage: "Loading live FOIA data...",
+      secondaryMessage: "Authenticating your session and retrieving the required SharePoint records.",
+      primaryAction: null,
+      secondaryAction: null,
+      showSpinner: true
+    },
+    error: {
+      ...baseConfig,
+      heading: "Unable to Retrieve Live SharePoint Data",
+      primaryMessage: "Unable to retrieve live SharePoint data.",
+      secondaryMessage: "Please verify your network connection or contact the system administrator.",
+      primaryAction: { label: "Try Again", action: "retry" },
+      secondaryAction: { label: "Sign Out", action: "signout" },
+      showSpinner: false
+    },
+    "access-denied": {
+      ...baseConfig,
+      heading: "Access Denied",
+      primaryMessage: "Your Illinois.gov Microsoft account is authenticated, but you do not have permission to access the DCI FOIA SharePoint list.",
+      secondaryMessage: "If you believe you should have access, contact the system administrator.",
+      primaryAction: { label: "Sign Out", action: "signout" },
+      secondaryAction: null,
+      showSpinner: false
+    },
+    dashboard: {
+      ...baseConfig,
+      showAuth: false,
+      showDashboard: true
+    }
+  }[view] || baseConfig;
+
+  const config = { ...viewConfig, ...overrides };
+
+  elements.authShell.hidden = !config.showAuth;
+  elements.dashboardShell.hidden = !config.showDashboard;
+  elements.authStateHeading.textContent = config.heading;
+  elements.authPrimaryMessage.textContent = config.primaryMessage;
+  elements.authSecondaryMessage.textContent = config.secondaryMessage;
+  elements.authSpinner.hidden = !config.showSpinner;
+
+  if (config.primaryAction) {
+    elements.loginSignInButton.hidden = false;
+    elements.loginSignInButton.textContent = config.primaryAction.label;
+    elements.loginSignInButton.dataset.action = config.primaryAction.action;
+  } else {
+    elements.loginSignInButton.hidden = true;
+    elements.loginSignInButton.dataset.action = "";
+  }
+
+  if (config.secondaryAction) {
+    elements.authSecondaryButton.hidden = false;
+    elements.authSecondaryButton.textContent = config.secondaryAction.label;
+    elements.authSecondaryButton.dataset.action = config.secondaryAction.action;
+  } else {
+    elements.authSecondaryButton.hidden = true;
+    elements.authSecondaryButton.dataset.action = "";
+  }
+}
+
+function stopLiveRefreshSchedule() {
+  if (!liveRefreshTimerId) {
+    return;
+  }
+  window.clearInterval(liveRefreshTimerId);
+  liveRefreshTimerId = null;
+}
+
+function resetLiveConnectionState() {
+  state.liveConnection.site.id = "";
+  state.liveConnection.site.displayName = "";
+  state.liveConnection.site.webUrl = "";
+  state.liveConnection.list.id = "";
+  state.liveConnection.list.displayName = "";
+  state.liveConnection.list.webUrl = "";
+  state.liveConnection.fieldMap = {};
+  state.diagnostics.siteResolved = false;
+  state.diagnostics.listResolved = false;
+  state.diagnostics.liveItemsLoaded = 0;
+  state.diagnostics.dataSource = "None";
+  state.diagnostics.lastUpdated = null;
+}
+
+function clearDashboardData(options = {}) {
+  const { preserveFilters = false, render = false } = options;
+
+  state.records = [];
+  state.availableWorkUnits = [];
+  state.baseFilteredRecords = [];
+  state.scopedRecords = [];
+  state.filteredRecords = [];
+  state.selectedId = null;
+  state.availableStatuses = [...FALLBACK_STATUS_CHOICES];
+
+  if (!preserveFilters) {
+    resetFiltersToDefault();
+  }
+
+  resetLiveConnectionState();
+
+  populateWorkUnitFilter();
+  populateStatusFilter();
+  elements.workUnitFilter.value = state.selectedWorkUnit;
+  elements.statusFilter.value = state.selectedStatus;
+  elements.timePeriodFilter.value = state.selectedTimePeriod;
+  elements.customStartDate.value = state.customStartDate;
+  elements.customEndDate.value = state.customEndDate;
+  elements.searchInput.value = state.searchQuery;
+
+  if (render) {
+    renderAll();
+  }
+}
+
+function isSessionExpiredError(error) {
+  return Boolean(error?.authInteractionRequired) || String(error?.errorCode || "").toLowerCase().includes("interaction");
+}
+
+function getGraphStatusFromError(error) {
+  return error?.graphStatus || error?.cause?.graphStatus || error?.cause?.cause?.graphStatus || 0;
+}
+
+function isAccessDeniedError(error) {
+  const status = getGraphStatusFromError(error);
+  if (status === 401 || status === 403) {
+    return true;
+  }
+  const message = String(error?.graphError || error?.cause?.graphError || error?.message || "").toLowerCase();
+  return message.includes("access denied") || message.includes("forbidden") || message.includes("insufficient privileges");
+}
+
+async function handleSignOutClick() {
+  stopLiveRefreshSchedule();
+  setAuthControlsEnabled(false);
+  clearDashboardData({ preserveFilters: false, render: true });
+
+  try {
+    if (msalInstance) {
+      const account = getPreferredAccount();
+      await msalInstance.logoutPopup({
+        account: account || undefined,
+        postLogoutRedirectUri: window.GRAPH_CONFIG?.redirectUri || window.location.href,
+        mainWindowRedirectUri: window.GRAPH_CONFIG?.redirectUri || window.location.href
+      });
+      if (typeof msalInstance.setActiveAccount === "function") {
+        msalInstance.setActiveAccount(null);
+      }
+    }
+  } catch (error) {
+    console.error("Microsoft sign-out failed.", error);
+  } finally {
+    state.diagnostics.authStatus = "Not signed in";
+    state.diagnostics.signedInUser = "N/A";
+    renderDiagnostics();
+    setAppView("login");
+    setAuthControlsEnabled(true);
+  }
+}
+
 function showStatusMessage(message, typeClass) {
   elements.connectionStatusMessage.textContent = message;
   elements.connectionStatusMessage.classList.remove("error", "demo", "live", "warning");
@@ -1245,6 +1590,7 @@ function setDashboardRecords(rawRecords) {
 
   state.records = rawRecords.map((record) => normalizeRecord(record));
   state.availableWorkUnits = buildAvailableWorkUnits(state.records);
+  logWorkUnitValidationSummary(state.records, state.availableWorkUnits.length);
   state.availableStatuses = buildAvailableStatuses(state.records, state.availableStatuses);
 
   if (previousWorkUnit === ALL_WORK_UNITS_OPTION || state.availableWorkUnits.includes(previousWorkUnit)) {
@@ -1303,9 +1649,7 @@ function startLiveRefreshSchedule() {
   liveRefreshTimerId = window.setInterval(async () => {
     await refreshLiveData({
       reason: "scheduled",
-      showBusyState: false,
-      fallbackToDemoOnFailure: false,
-      keepCurrentDataOnFailure: true
+      showBusyState: false
     });
   }, LIVE_REFRESH_INTERVAL_MS);
 }
@@ -1325,18 +1669,9 @@ function formatDateTime(value) {
 }
 
 function buildAvailableWorkUnits(records) {
-  const fromData = new Set(
-    records
-      .map((record) => String(record.dci_work_unit || "").trim())
-      .filter((value) => value)
+  return orderWorkUnits(
+    records.flatMap((record) => getWorkUnits(record))
   );
-
-  const orderedKnown = DCI_WORK_UNITS.filter((unit) => fromData.has(unit));
-  const extras = Array.from(fromData)
-    .filter((unit) => !DCI_WORK_UNITS.includes(unit))
-    .sort((a, b) => a.localeCompare(b));
-
-  return [...orderedKnown, ...extras];
 }
 
 function buildAvailableStatuses(records, baselineChoices) {
@@ -1387,7 +1722,7 @@ function applyFilters() {
   const customRange = getCustomDateRange(state.customStartDate, state.customEndDate);
 
   state.baseFilteredRecords = state.records.filter((record) => {
-    if (state.selectedWorkUnit !== ALL_WORK_UNITS_OPTION && record.dci_work_unit !== state.selectedWorkUnit) {
+    if (state.selectedWorkUnit !== ALL_WORK_UNITS_OPTION && !recordHasWorkUnit(record, state.selectedWorkUnit)) {
       return false;
     }
 
@@ -1502,12 +1837,12 @@ function renderWorkUnitSummary() {
   const monthReference = new Date();
   const monthScopeRecords = getCurrentMonthMetricScopeRecords();
   const unitsInScope = state.selectedWorkUnit === ALL_WORK_UNITS_OPTION
-    ? Array.from(new Set(records.map((record) => record.dci_work_unit))).sort((a, b) => a.localeCompare(b))
+    ? buildAvailableWorkUnits(records)
     : [state.selectedWorkUnit];
 
   const rows = unitsInScope
     .map((workUnit) => {
-      const unitRecords = records.filter((record) => record.dci_work_unit === workUnit);
+      const unitRecords = records.filter((record) => recordHasWorkUnit(record, workUnit));
       const statusCounts = statusColumns.map((status) => unitRecords.filter((record) => statusEquals(record.status, status)).length);
       const activeRecords = unitRecords.filter((record) => isOpenStageStatus(record.status));
       const due10 = activeRecords.filter((record) => {
@@ -1529,7 +1864,7 @@ function renderWorkUnitSummary() {
       const durations = activeRecords.map((record) => daysInProgress(record)).filter((days) => Number.isFinite(days));
       const avgDays = durations.length ? Math.round(durations.reduce((sum, days) => sum + days, 0) / durations.length) : 0;
 
-      const monthUnitScope = monthScopeRecords.filter((record) => record.dci_work_unit === workUnit);
+      const monthUnitScope = monthScopeRecords.filter((record) => recordHasWorkUnit(record, workUnit));
       const receivedThisMonth = monthUnitScope.filter((record) => isWithinMonth(getIntakeDate(record), monthReference)).length;
       const completedThisMonth = monthUnitScope.filter((record) => isCompletedStatus(record.status) && isWithinMonth(record.closed_date, monthReference)).length;
 
@@ -1603,7 +1938,7 @@ function renderCommandAlerts() {
   const respondedWorkUnits = new Set(
     records
       .filter((record) => statusEquals(record.status, "4. WORK UNIT RESPONDED"))
-      .map((record) => record.dci_work_unit)
+      .flatMap((record) => getWorkUnits(record))
       .filter(Boolean)
   );
   const completedThisMonth = monthScopeRecords.filter((record) => isCompletedStatus(record.status) && isWithinMonth(record.closed_date, new Date())).length;
@@ -1769,9 +2104,12 @@ function renderDetailPanel() {
 }
 
 function normalizeRecord(record) {
-  const workUnit = normalizeWorkUnit(record.dci_work_unit || record.work_unit);
+  const workUnits = getWorkUnits(record);
+  const workUnit = getWorkUnitDisplay(workUnits);
   return {
     ...record,
+    workUnits,
+    workUnit,
     dci_work_unit: workUnit,
     status: normalizeStatus(record.status),
     received_date: parseDate(record.received_date),
@@ -1784,8 +2122,7 @@ function normalizeRecord(record) {
 }
 
 function normalizeWorkUnit(value) {
-  const normalized = String(value || "").trim();
-  return normalized || "Unknown";
+  return getWorkUnitDisplay(getWorkUnits(value));
 }
 
 function normalizeStatus(status) {
@@ -1962,7 +2299,7 @@ function daysInProgress(record) {
 
 function getCurrentMonthMetricScopeRecords() {
   return state.records.filter((record) => {
-    if (state.selectedWorkUnit !== ALL_WORK_UNITS_OPTION && record.dci_work_unit !== state.selectedWorkUnit) {
+    if (state.selectedWorkUnit !== ALL_WORK_UNITS_OPTION && !recordHasWorkUnit(record, state.selectedWorkUnit)) {
       return false;
     }
     if (state.selectedStatus !== ALL_STATUSES_OPTION && !statusEquals(record.status, state.selectedStatus)) {
@@ -2007,7 +2344,7 @@ function buildTrendRows() {
   const customRange = getCustomDateRange(state.customStartDate, state.customEndDate);
 
   const baseRecords = state.records.filter((record) => {
-    if (state.selectedWorkUnit !== ALL_WORK_UNITS_OPTION && record.dci_work_unit !== state.selectedWorkUnit) {
+    if (state.selectedWorkUnit !== ALL_WORK_UNITS_OPTION && !recordHasWorkUnit(record, state.selectedWorkUnit)) {
       return false;
     }
     if (state.selectedStatus !== ALL_STATUSES_OPTION && !statusEquals(record.status, state.selectedStatus)) {

@@ -10,7 +10,32 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div class="app-shell">
+  <main id="authShell" class="auth-shell" aria-live="polite">
+    <section class="auth-card" aria-labelledby="authDashboardTitle">
+      <div class="auth-card-inner">
+        <p class="auth-agency">Illinois State Police</p>
+        <h1 id="authDashboardTitle" class="auth-title">
+          <span class="title-line title-line-primary">Division of Criminal Investigation</span>
+          <span class="title-line title-line-secondary">FOIA Command Dashboard</span>
+        </h1>
+        <div class="auth-logo" aria-hidden="true">
+          <img src="images/email-signature.png" alt="" class="auth-logo-image">
+        </div>
+        <div class="auth-copy">
+          <p id="authStateHeading" class="auth-state-heading">Secure Access Required</p>
+          <p id="authPrimaryMessage" class="auth-primary-message">This application contains official law enforcement information.</p>
+          <p id="authSecondaryMessage" class="auth-secondary-message">You must sign in with your Illinois.gov Microsoft account to continue.</p>
+        </div>
+        <div id="authSpinner" class="auth-spinner" hidden aria-hidden="true"></div>
+        <div class="auth-actions">
+          <button id="loginSignInButton" class="btn btn-signin auth-primary-button" type="button" aria-label="Sign in with Microsoft">Sign in with Microsoft</button>
+          <button id="authSecondaryButton" class="btn btn-refresh auth-secondary-button" type="button" hidden></button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="dashboardShell" class="app-shell" hidden>
     <header class="top-header">
       <div class="header-left">
         <div class="header-logo" aria-hidden="true">
@@ -28,7 +53,7 @@
       <div class="header-right">
         <div class="header-buttons-col">
           <div class="header-actions">
-            <button id="signInButton" class="btn btn-signin" type="button" aria-label="Sign in with Microsoft">Sign in with Microsoft</button>
+            <button id="signOutButton" class="btn btn-signin" type="button" aria-label="Sign out of Microsoft">Sign Out</button>
             <button id="darkModeToggle" class="btn" type="button" aria-label="Toggle dark mode">Dark Mode</button>
             <button id="presentationToggle" class="btn btn-accent" type="button" aria-label="Toggle presentation mode">Presentation Mode</button>
           </div>
@@ -85,7 +110,7 @@
               <button id="clearFiltersButton" class="btn btn-refresh" type="button" aria-label="Clear all filters">Clear Filters</button>
             </div>
           </div>
-          <div id="connectionStatusMessage" class="connection-status" role="status" aria-live="polite">Sign in with Microsoft to load live SharePoint data.</div>
+          <div id="connectionStatusMessage" class="connection-status" role="status" aria-live="polite">Awaiting live SharePoint connection.</div>
           <div class="connection-toolbar">
             <button id="refreshNowButton" class="btn btn-refresh" type="button" aria-label="Refresh SharePoint data now">Refresh Now</button>
             <span class="last-updated">Last Updated: <strong id="lastUpdatedValue">Never</strong></span>
@@ -184,6 +209,7 @@
                 <tbody id="workUnitSummaryBody"></tbody>
               </table>
             </div>
+            <p class="summary-note">Work-unit totals may exceed the DCI-wide total because FOIAs involving multiple work units are counted once for each participating unit.</p>
           </article>
 
           <article class="panel trend-panel">

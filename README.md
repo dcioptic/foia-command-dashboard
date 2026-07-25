@@ -2,15 +2,13 @@
 
 Static dashboard prototype for tracking Illinois State Police FOIA requests.
 
-This dashboard now supports loading data from SharePoint through Microsoft Graph.
-If Graph authentication is not configured or fails, it falls back to `foia-data.json`.
+This dashboard requires Microsoft authentication and loads live data from SharePoint through Microsoft Graph.
 
 ## Files
 
 - `index.html` - dashboard layout and UI containers
 - `style.css` - executive-style law enforcement dashboard theme
 - `app.js` - data loading, KPI calculations, table rendering, and interactions
-- `foia-data.json` - sample FOIA request records
 - `graph-config.js` - local Graph auth configuration (token or MSAL settings)
 
 ## Features
