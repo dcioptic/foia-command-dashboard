@@ -130,6 +130,9 @@ const elements = {
   kpiScopeSummary: document.getElementById("kpiScopeSummary"),
   workUnitSummaryBody: document.getElementById("workUnitSummaryBody"),
   trendTableBody: document.getElementById("trendTableBody"),
+  receivedCompletedPanel: document.getElementById("receivedCompletedPanel"),
+  upcomingDeadlinesPanel: document.getElementById("upcomingDeadlinesPanel"),
+  commandAlertsPanel: document.getElementById("commandAlertsPanel"),
   upcomingDeadlines: document.getElementById("upcomingDeadlines"),
   commandAlerts: document.getElementById("commandAlerts"),
   foiaTableBody: document.getElementById("foiaTableBody"),
@@ -159,6 +162,8 @@ const today = startOfDay(new Date());
 let msalInstance = null;
 let liveRefreshTimerId = null;
 let liveRefreshInProgress = false;
+let analyticsResizeObserver = null;
+let analyticsSyncFrame = 0;
 const devWarningFlags = new Set();
 
 initialize();
@@ -166,6 +171,7 @@ initialize();
 async function initialize() {
   hydrateInitialFiltersFromUrl();
   attachCoreEventListeners();
+  initializeAnalyticsPanelSync();
   clearDashboardData({ preserveFilters: true, render: true });
   setAppView("login");
   setAuthControlsEnabled(false);
@@ -254,6 +260,7 @@ function attachCoreEventListeners() {
     document.body.classList.toggle("dark");
     elements.darkModeToggle.setAttribute("aria-pressed", String(document.body.classList.contains("dark")));
     elements.darkModeToggle.textContent = document.body.classList.contains("dark") ? "Light Mode" : "Dark Mode";
+    requestSyncAnalyticsPanelHeights();
   });
 
   elements.refreshNowButton.addEventListener("click", async () => {
@@ -262,6 +269,10 @@ function attachCoreEventListeners() {
 
   elements.signOutButton.addEventListener("click", async () => {
     await handleSignOutClick();
+  });
+
+  window.addEventListener("resize", () => {
+    requestSyncAnalyticsPanelHeights();
   });
 }
 
@@ -1412,6 +1423,55 @@ function setAppView(view, overrides = {}) {
     elements.authSecondaryButton.hidden = true;
     elements.authSecondaryButton.dataset.action = "";
   }
+
+  if (config.showDashboard) {
+    requestSyncAnalyticsPanelHeights();
+  }
+}
+
+function initializeAnalyticsPanelSync() {
+  if (!elements.receivedCompletedPanel || analyticsResizeObserver || typeof ResizeObserver !== "function") {
+    return;
+  }
+
+  analyticsResizeObserver = new ResizeObserver(() => {
+    requestSyncAnalyticsPanelHeights();
+  });
+
+  analyticsResizeObserver.observe(elements.receivedCompletedPanel);
+}
+
+function requestSyncAnalyticsPanelHeights() {
+  if (analyticsSyncFrame) {
+    window.cancelAnimationFrame(analyticsSyncFrame);
+  }
+
+  analyticsSyncFrame = window.requestAnimationFrame(() => {
+    analyticsSyncFrame = 0;
+    syncAnalyticsPanelHeights();
+  });
+}
+
+function syncAnalyticsPanelHeights() {
+  const referencePanel = elements.receivedCompletedPanel;
+  const deadlinePanel = elements.upcomingDeadlinesPanel;
+  const alertsPanel = elements.commandAlertsPanel;
+
+  if (!referencePanel || !deadlinePanel || !alertsPanel || elements.dashboardShell.hidden) {
+    return;
+  }
+
+  deadlinePanel.style.height = "";
+  alertsPanel.style.height = "";
+
+  const targetHeight = referencePanel.getBoundingClientRect().height;
+  if (!Number.isFinite(targetHeight) || targetHeight <= 0) {
+    return;
+  }
+
+  const pixelHeight = `${Math.round(targetHeight)}px`;
+  deadlinePanel.style.height = pixelHeight;
+  alertsPanel.style.height = pixelHeight;
 }
 
 function stopLiveRefreshSchedule() {
@@ -1730,6 +1790,7 @@ function renderAll() {
   renderCommandAlerts();
   renderRequestTable();
   renderDetailPanel();
+  requestSyncAnalyticsPanelHeights();
 }
 
 function renderKpis() {

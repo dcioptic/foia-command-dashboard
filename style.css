@@ -604,15 +604,13 @@ body.dark .connection-diagnostics {
 .analytics-row {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  align-items: stretch;
+  align-items: start;
   gap: 0.92rem;
   min-height: 0;
 }
 
 .analytics-row > .panel {
   min-height: 0;
-  height: 100%;
-  align-self: stretch;
   overflow: hidden;
 }
 
@@ -662,9 +660,28 @@ body.dark .connection-diagnostics {
 .trend-panel-body,
 .deadlines-panel-body,
 .alerts-panel-body {
-  flex: 1;
   min-height: 0;
-  height: 100%;
+}
+
+.trend-panel-body {
+  flex: 0 0 auto;
+  height: auto;
+  overflow: visible;
+}
+
+.deadlines-panel,
+.alerts-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.deadlines-panel-body,
+.alerts-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .summary-table-wrap {
