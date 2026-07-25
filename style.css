@@ -764,7 +764,7 @@ body.dark .connection-diagnostics {
 
 .foia-table-wrap th:nth-child(2),
 .foia-table-wrap td:nth-child(2) {
-  width: 27%;
+  width: 25%;
 }
 
 .foia-table-wrap th:nth-child(3),
@@ -794,13 +794,13 @@ body.dark .connection-diagnostics {
 
 .foia-table-wrap th:nth-child(8),
 .foia-table-wrap td:nth-child(8) {
-  width: 5%;
+  width: 7%;
 }
 
 .foia-table-wrap td:nth-child(2) {
-  white-space: normal;
-  overflow-wrap: anywhere;
-  word-break: break-word;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .foia-table-wrap td:nth-child(1),
@@ -828,11 +828,12 @@ body.dark .connection-diagnostics {
 }
 
 .foia-table-wrap th:nth-child(8) {
-  min-width: 54px;
+  min-width: 72px;
   text-align: center;
   white-space: normal;
   word-break: normal;
   overflow-wrap: normal;
+  line-height: 1.15;
 }
 
 .foia-table-wrap td:nth-child(8) {
