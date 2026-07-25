@@ -62,10 +62,14 @@ const COMPLETED_STATUS = "5. DCI COMPLETED";
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const DEFAULT_GRAPH_SCOPES = ["User.Read", "Sites.Read.All"];
 const LIVE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
+const SHAREPOINT_LOAD_TIMEOUT_MS = 45 * 1000;
 const SHAREPOINT_HOSTNAME = "ilgov.sharepoint.com";
 const SHAREPOINT_SITE_PATH = "/teams/ISP.DCI.Commanders";
 const SHAREPOINT_FOIA_LIST_PATH = "/Lists/DCI%20FOIA/";
 const SHAREPOINT_FOIA_LIST_NAME_FALLBACKS = ["DCI FOIA", "DCI FOIA TRACKER", "DCI FOIA Tracker"];
+const AUTH_REDIRECT_PENDING_KEY = "authenticationRedirectPending";
+const GRAPH_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
+const GRAPH_MAX_RETRIES = 2;
 
 const state = {
   records: [],
@@ -161,10 +165,11 @@ const elements = {
 const today = startOfDay(new Date());
 let msalInstance = null;
 let liveRefreshTimerId = null;
-let liveRefreshInProgress = false;
 let analyticsResizeObserver = null;
 let analyticsSyncFrame = 0;
 const devWarningFlags = new Set();
+let initializationPromise = null;
+let dataLoadPromise = null;
 
 initialize();
 
@@ -174,7 +179,7 @@ async function initialize() {
   initializeAnalyticsPanelSync();
   clearDashboardData({ preserveFilters: true, render: true });
   setAppView("login");
-  setAuthControlsEnabled(false);
+  setAuthControlsEnabled({ loginEnabled: false, refreshEnabled: false, signOutEnabled: false });
   renderDiagnostics();
 
   console.log("MSAL Browser loaded:", Boolean(window.msal?.PublicClientApplication));
@@ -185,14 +190,12 @@ async function initialize() {
   });
 
   try {
-    await initializeAuthentication();
-    setAuthControlsEnabled(true);
-    await trySilentLiveLoad();
+    await startApplication();
   } catch (error) {
     console.error("MSAL initialization failed.", error);
     state.diagnostics.authStatus = "Initialization failed";
     renderDiagnostics();
-    setAuthControlsEnabled(false);
+    setAuthControlsEnabled({ loginEnabled: false, refreshEnabled: false, signOutEnabled: false });
     setAppView("error", {
       heading: "Authentication Unavailable",
       primaryMessage: "Microsoft authentication could not be initialized for this application.",
@@ -206,19 +209,11 @@ async function initialize() {
 
 function attachCoreEventListeners() {
   elements.loginSignInButton.addEventListener("click", async () => {
-    await handleSignInClick();
+    await handleAuthAction(elements.loginSignInButton.dataset.action || "signin");
   });
 
   elements.authSecondaryButton.addEventListener("click", async () => {
-    const action = elements.authSecondaryButton.dataset.action;
-    if (action === "retry") {
-      setAppView("loading");
-      await refreshLiveData({ reason: "retry", showBusyState: false });
-      return;
-    }
-    if (action === "signout") {
-      await handleSignOutClick();
-    }
+    await handleAuthAction(elements.authSecondaryButton.dataset.action || "");
   });
 
   elements.searchInput.addEventListener("input", (event) => {
@@ -313,7 +308,165 @@ function syncStatusQueryString() {
   window.history.replaceState({}, "", nextUrl);
 }
 
-async function initializeAuthentication() {
+async function initializeMsal() {
+  if (initializationPromise) {
+    return initializationPromise;
+  }
+
+  initializationPromise = (async () => {
+    if (!window.msal || !window.msal.PublicClientApplication) {
+      throw new Error("MSAL Browser failed to load.");
+    }
+
+    const config = window.GRAPH_CONFIG;
+    if (!config?.clientId || !config?.tenantId || !config?.authority || !config?.redirectUri) {
+      throw new Error("Microsoft Entra configuration is missing.");
+    }
+
+    if (msalInstance) {
+      return msalInstance;
+    }
+
+    const msalConfig = {
+      auth: {
+        clientId: config.clientId,
+        authority: config.authority,
+        redirectUri: config.redirectUri,
+        postLogoutRedirectUri: config.redirectUri,
+        navigateToLoginRequestUrl: false
+      },
+      cache: {
+        cacheLocation: "sessionStorage",
+        storeAuthStateInCookie: false
+      }
+    };
+
+    msalInstance = new window.msal.PublicClientApplication(msalConfig);
+
+    if (typeof msalInstance.initialize === "function") {
+      await msalInstance.initialize();
+    }
+
+    console.info("MSAL initialized");
+    return msalInstance;
+  })();
+
+  try {
+    return await initializationPromise;
+  } catch (error) {
+    initializationPromise = null;
+    throw error;
+  }
+}
+
+async function startApplication() {
+  await initializeMsal();
+
+  let redirectResult = null;
+  try {
+    redirectResult = await msalInstance.handleRedirectPromise();
+  } finally {
+    sessionStorage.removeItem(AUTH_REDIRECT_PENDING_KEY);
+  }
+
+  console.info("Redirect result processed", {
+    receivedRedirectAccount: Boolean(redirectResult?.account)
+  });
+
+  if (redirectResult?.account) {
+    msalInstance.setActiveAccount(redirectResult.account);
+  }
+
+  const account = msalInstance.getActiveAccount() || msalInstance.getAllAccounts()[0];
+  if (!account) {
+    state.diagnostics.authStatus = "Ready to sign in";
+    state.diagnostics.signedInUser = "N/A";
+    renderDiagnostics();
+    setAuthControlsEnabled({ loginEnabled: true, refreshEnabled: false, signOutEnabled: false });
+    setAppView("login");
+    return;
+  }
+
+  msalInstance.setActiveAccount(account);
+  console.info("Active account detected", {
+    username: account.username || "N/A"
+  });
+  updateAuthDiagnostics(account, "Signed in");
+  setAuthControlsEnabled({ loginEnabled: false, refreshEnabled: true, signOutEnabled: true });
+
+  setAppView("loading");
+  const loaded = await refreshLiveData({ reason: "startup", showBusyState: false });
+  if (loaded) {
+    startLiveRefreshSchedule();
+  }
+}
+
+function setAuthControlsEnabled({ loginEnabled, refreshEnabled, signOutEnabled }) {
+  elements.loginSignInButton.disabled = !loginEnabled;
+  elements.refreshNowButton.disabled = !refreshEnabled;
+  elements.signOutButton.disabled = !signOutEnabled;
+}
+
+async function handleAuthAction(action) {
+  if (action === "retry") {
+    setAppView("loading");
+    await refreshLiveData({ reason: "retry", showBusyState: false });
+    return;
+  }
+
+  if (action === "signout") {
+    await handleSignOutClick();
+    return;
+  }
+
+  if (action === "continue-signin") {
+    await continueMicrosoftSignIn();
+    return;
+  }
+
+  if (action === "signin") {
+    await handleSignInClick();
+  }
+}
+
+function getRedirectStartPage() {
+  return window.GRAPH_CONFIG?.redirectUri || "https://mdroot7282.github.io/foia-command-dashboard/";
+}
+
+async function continueMicrosoftSignIn() {
+  if (!msalInstance) {
+    return;
+  }
+
+  const account = getPreferredAccount();
+  const button = elements.loginSignInButton;
+  button.disabled = true;
+  button.textContent = "Continuing Microsoft Sign-In...";
+  setAuthControlsEnabled({ loginEnabled: false, refreshEnabled: false, signOutEnabled: Boolean(account) });
+
+  try {
+    sessionStorage.setItem(AUTH_REDIRECT_PENDING_KEY, "true");
+    await msalInstance.acquireTokenRedirect({
+      scopes: getGraphScopes(),
+      account: account || undefined,
+      redirectStartPage: getRedirectStartPage()
+    });
+  } catch (error) {
+    sessionStorage.removeItem(AUTH_REDIRECT_PENDING_KEY);
+    console.error("Microsoft continue sign-in redirect failed.", error);
+    setAppView("error", {
+      heading: "Authentication Unavailable",
+      primaryMessage: "Microsoft sign-in could not continue.",
+      secondaryMessage: "Please select Continue Microsoft Sign-In again.",
+      primaryAction: { label: "Continue Microsoft Sign-In", action: "continue-signin" },
+      secondaryAction: account ? { label: "Sign Out", action: "signout" } : null,
+      showSpinner: false
+    });
+    setAuthControlsEnabled({ loginEnabled: true, refreshEnabled: Boolean(account), signOutEnabled: Boolean(account) });
+  }
+}
+
+async function handleSignInClick() {
   if (!window.msal || !window.msal.PublicClientApplication) {
     throw new Error("MSAL Browser failed to load.");
   }
@@ -323,64 +476,6 @@ async function initializeAuthentication() {
     throw new Error("Microsoft Entra configuration is missing.");
   }
 
-  if (msalInstance) {
-    return;
-  }
-
-  const msalConfig = {
-    auth: {
-      clientId: config.clientId,
-      authority: config.authority,
-      redirectUri: config.redirectUri,
-      postLogoutRedirectUri: config.redirectUri,
-      navigateToLoginRequestUrl: false
-    },
-    cache: {
-      cacheLocation: "sessionStorage",
-      storeAuthStateInCookie: false
-    }
-  };
-
-  msalInstance = new window.msal.PublicClientApplication(msalConfig);
-
-  if (typeof msalInstance.initialize === "function") {
-    await msalInstance.initialize();
-  }
-
-  await msalInstance.handleRedirectPromise();
-
-  const accounts = msalInstance.getAllAccounts();
-  if (accounts.length > 0) {
-    msalInstance.setActiveAccount(accounts[0]);
-  }
-}
-
-function setAuthControlsEnabled(enabled) {
-  elements.loginSignInButton.disabled = !enabled;
-  elements.refreshNowButton.disabled = !enabled;
-  elements.signOutButton.disabled = !enabled;
-}
-
-async function trySilentLiveLoad() {
-  const account = getPreferredAccount();
-  if (!account) {
-    state.diagnostics.authStatus = "Ready to sign in";
-    renderDiagnostics();
-    setAppView("login");
-    return;
-  }
-
-  msalInstance.setActiveAccount(account);
-  updateAuthDiagnostics(account, "Signed in");
-  setAppView("loading");
-
-  const loaded = await refreshLiveData({ reason: "startup", showBusyState: false });
-  if (loaded) {
-    startLiveRefreshSchedule();
-  }
-}
-
-async function handleSignInClick() {
   if (!msalInstance) {
     setAppView("error", {
       heading: "Authentication Unavailable",
@@ -393,29 +488,36 @@ async function handleSignInClick() {
     return;
   }
 
+  if (sessionStorage.getItem(AUTH_REDIRECT_PENDING_KEY) === "true") {
+    setAppView("loading", {
+      heading: "Microsoft Sign-In In Progress",
+      primaryMessage: "",
+      secondaryMessage: "Please complete the Microsoft sign-in process in this browser window.",
+      primaryAction: null,
+      secondaryAction: null,
+      showSpinner: true
+    });
+    return;
+  }
+
   elements.loginSignInButton.disabled = true;
-  elements.loginSignInButton.textContent = "Signing in...";
+  elements.loginSignInButton.textContent = "Redirecting to Microsoft...";
   setAppView("loading");
 
   try {
-    const loginRequest = {
-      scopes: getGraphScopes(),
+    sessionStorage.setItem(AUTH_REDIRECT_PENDING_KEY, "true");
+    await msalInstance.loginRedirect({
+      scopes: window.GRAPH_CONFIG.scopes,
+      redirectStartPage: getRedirectStartPage(),
       prompt: "select_account"
-    };
-
-    const loginResponse = await msalInstance.loginPopup(loginRequest);
-    msalInstance.setActiveAccount(loginResponse.account);
-    updateAuthDiagnostics(loginResponse.account, "Signed in");
-
-    const loaded = await refreshLiveData({ reason: "signin", showBusyState: false });
-    if (loaded) {
-      startLiveRefreshSchedule();
-    }
+    });
   } catch (error) {
+    sessionStorage.removeItem(AUTH_REDIRECT_PENDING_KEY);
+    console.error("Microsoft login redirect failed.", error);
     await handleLiveLoadFailure(error, { reason: "signin" });
-  } finally {
     elements.loginSignInButton.disabled = false;
     elements.loginSignInButton.textContent = "Sign in with Microsoft";
+    setAuthControlsEnabled({ loginEnabled: true, refreshEnabled: false, signOutEnabled: false });
   }
 }
 
@@ -425,41 +527,50 @@ async function refreshLiveData(options = {}) {
     showBusyState = false
   } = options;
 
-  if (liveRefreshInProgress) {
-    return false;
+  if (dataLoadPromise) {
+    return dataLoadPromise;
   }
 
-  liveRefreshInProgress = true;
-
-  if (showBusyState) {
-    elements.refreshNowButton.disabled = true;
-    elements.refreshNowButton.textContent = "Refreshing...";
-  }
-
-  try {
-    await loadLiveSharePointData();
-    setAppView("dashboard");
-    return true;
-  } catch (error) {
-    await handleLiveLoadFailure(error, { reason });
-    return false;
-  } finally {
-    liveRefreshInProgress = false;
+  dataLoadPromise = (async () => {
     if (showBusyState) {
-      elements.refreshNowButton.disabled = false;
-      elements.refreshNowButton.textContent = "Refresh Now";
+      elements.refreshNowButton.disabled = true;
+      elements.refreshNowButton.textContent = "Refreshing...";
     }
-  }
+
+    try {
+      await withTimeout(loadLiveSharePointData(), SHAREPOINT_LOAD_TIMEOUT_MS);
+      setAppView("dashboard");
+      setAuthControlsEnabled({ loginEnabled: false, refreshEnabled: true, signOutEnabled: true });
+      return true;
+    } catch (error) {
+      await handleLiveLoadFailure(error, { reason });
+      return false;
+    } finally {
+      if (showBusyState) {
+        elements.refreshNowButton.disabled = false;
+        elements.refreshNowButton.textContent = "Refresh Now";
+      }
+    }
+  })().finally(() => {
+    dataLoadPromise = null;
+  });
+
+  return dataLoadPromise;
 }
 
 async function loadLiveSharePointData() {
   const token = await acquireGraphAccessToken();
+  console.info("Token acquired silently");
 
   const site = await resolveSharePointSite(token);
   state.liveConnection.site.id = site.id || "";
   state.liveConnection.site.displayName = site.displayName || "";
   state.liveConnection.site.webUrl = site.webUrl || "";
   state.diagnostics.siteResolved = true;
+  console.info("Graph site resolved", {
+    siteId: state.liveConnection.site.id,
+    displayName: state.liveConnection.site.displayName
+  });
   renderDiagnostics();
 
   const list = await resolveFoiaList(token, site.id);
@@ -467,6 +578,10 @@ async function loadLiveSharePointData() {
   state.liveConnection.list.displayName = list.displayName || "";
   state.liveConnection.list.webUrl = list.webUrl || "";
   state.diagnostics.listResolved = true;
+  console.info("Graph list resolved", {
+    listId: state.liveConnection.list.id,
+    displayName: state.liveConnection.list.displayName
+  });
   renderDiagnostics();
 
   const columns = await fetchAllListColumns(token, site.id, list.id);
@@ -487,6 +602,9 @@ async function loadLiveSharePointData() {
   state.diagnostics.liveItemsLoaded = items.length;
   state.diagnostics.dataSource = "SharePoint";
   state.diagnostics.lastUpdated = new Date();
+  console.info("Records loaded", {
+    count: items.length
+  });
   showStatusMessage("Live SharePoint data connected", "live");
   renderDiagnostics();
 
@@ -499,6 +617,29 @@ async function handleLiveLoadFailure(error, options = {}) {
   console.error("SharePoint authentication or loading failed.", error);
   clearDashboardData({ preserveFilters: true, render: true });
   renderDiagnostics();
+  const account = getPreferredAccount();
+  const hasAuthenticatedAccount = Boolean(account);
+
+  if (isInteractionRequired(error)) {
+    state.diagnostics.authStatus = "Authentication interaction required";
+    if (hasAuthenticatedAccount) {
+      updateAuthDiagnostics(account, "Signed in");
+    } else {
+      state.diagnostics.signedInUser = "N/A";
+      renderDiagnostics();
+    }
+
+    setAppView("error", {
+      heading: "Microsoft Session Verification Required",
+      primaryMessage: "Your Microsoft session has expired. Please sign in again.",
+      secondaryMessage: "Select Continue Microsoft Sign-In to complete authentication.",
+      primaryAction: { label: "Continue Microsoft Sign-In", action: "continue-signin" },
+      secondaryAction: hasAuthenticatedAccount ? { label: "Sign Out", action: "signout" } : null,
+      showSpinner: false
+    });
+    setAuthControlsEnabled({ loginEnabled: true, refreshEnabled: hasAuthenticatedAccount, signOutEnabled: hasAuthenticatedAccount });
+    return;
+  }
 
   if (isSessionExpiredError(error)) {
     stopLiveRefreshSchedule();
@@ -522,22 +663,51 @@ async function handleLiveLoadFailure(error, options = {}) {
   if (isAccessDeniedError(error)) {
     state.diagnostics.authStatus = "Access denied";
     renderDiagnostics();
-    setAppView("access-denied");
+    setAppView("access-denied", {
+      primaryMessage: "You are signed in but do not have permission to access the DCI FOIA SharePoint list.",
+      secondaryAction: hasAuthenticatedAccount ? { label: "Sign Out", action: "signout" } : null
+    });
+    setAuthControlsEnabled({ loginEnabled: false, refreshEnabled: false, signOutEnabled: hasAuthenticatedAccount });
     return;
   }
 
-  showStatusMessage(
-    "Unable to retrieve live SharePoint data. Please verify your network connection or contact the system administrator.",
-    "error"
-  );
+  const graphStatus = getGraphStatusFromError(error);
+  if (graphStatus === 401) {
+    setAppView("error", {
+      heading: "Session Expired",
+      primaryMessage: "Your Microsoft session has expired. Please sign in again.",
+      secondaryMessage: "Select Continue Microsoft Sign-In to renew your Microsoft session.",
+      primaryAction: { label: "Continue Microsoft Sign-In", action: "continue-signin" },
+      secondaryAction: hasAuthenticatedAccount ? { label: "Sign Out", action: "signout" } : null,
+      showSpinner: false
+    });
+    setAuthControlsEnabled({ loginEnabled: true, refreshEnabled: hasAuthenticatedAccount, signOutEnabled: hasAuthenticatedAccount });
+    return;
+  }
+
+  if (graphStatus === 404) {
+    setAppView("error", {
+      heading: "SharePoint Resource Not Found",
+      primaryMessage: "The DCI FOIA SharePoint site or list could not be located.",
+      secondaryMessage: "Verify the configured site and list paths, then select Try Again.",
+      primaryAction: { label: "Try Again", action: "retry" },
+      secondaryAction: hasAuthenticatedAccount ? { label: "Sign Out", action: "signout" } : null,
+      showSpinner: false
+    });
+    setAuthControlsEnabled({ loginEnabled: false, refreshEnabled: hasAuthenticatedAccount, signOutEnabled: hasAuthenticatedAccount });
+    return;
+  }
+
+  showStatusMessage("Live SharePoint data is temporarily unavailable. Select Try Again.", "warning");
   setAppView("error", {
     heading: "Unable to Retrieve Live SharePoint Data",
-    primaryMessage: "Unable to retrieve live SharePoint data.",
-    secondaryMessage: "Please verify your network connection or contact the system administrator.",
+    primaryMessage: "Live SharePoint data is temporarily unavailable. Select Try Again.",
+    secondaryMessage: "Your Microsoft session is still active.",
     primaryAction: { label: "Try Again", action: "retry" },
-    secondaryAction: { label: "Sign Out", action: "signout" },
+    secondaryAction: hasAuthenticatedAccount ? { label: "Sign Out", action: "signout" } : null,
     showSpinner: false
   });
+  setAuthControlsEnabled({ loginEnabled: false, refreshEnabled: hasAuthenticatedAccount, signOutEnabled: hasAuthenticatedAccount });
 }
 
 async function acquireGraphAccessToken() {
@@ -549,13 +719,14 @@ async function acquireGraphAccessToken() {
   }
 
   const scopes = getGraphScopes();
+  const tokenRequest = {
+    scopes,
+    account: msalInstance.getActiveAccount()
+  };
   console.log("Graph token scopes requested:", scopes);
 
   try {
-    const tokenResult = await msalInstance.acquireTokenSilent({
-      account,
-      scopes
-    });
+    const tokenResult = await msalInstance.acquireTokenSilent(tokenRequest);
     return tokenResult.accessToken;
   } catch (error) {
     if (isInteractionRequired(error)) {
@@ -566,51 +737,75 @@ async function acquireGraphAccessToken() {
 }
 
 async function graphFetch(token, url) {
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json"
+  for (let attempt = 0; attempt <= GRAPH_MAX_RETRIES; attempt += 1) {
+    let response;
+
+    try {
+      response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: "application/json"
+        }
+      });
+    } catch (networkError) {
+      if (attempt < GRAPH_MAX_RETRIES) {
+        await waitForMs(getRetryDelayMs(null, attempt));
+        continue;
+      }
+      const error = new Error("Network request failed");
+      error.graphTransient = true;
+      error.cause = networkError;
+      throw error;
     }
-  });
 
-  const status = response.status;
-  const rawText = await response.text();
+    const status = response.status;
+    const rawText = await response.text();
 
-  if (!response.ok) {
-    let errorPayload = null;
+    if (!response.ok) {
+      let errorPayload = null;
+      if (rawText) {
+        try {
+          errorPayload = JSON.parse(rawText);
+        } catch {
+          errorPayload = null;
+        }
+      }
+
+      const graphError = errorPayload?.error || rawText || "Unknown Graph error";
+      const retryable = GRAPH_RETRYABLE_STATUS.has(status);
+      if (retryable && attempt < GRAPH_MAX_RETRIES) {
+        await waitForMs(getRetryDelayMs(response.headers.get("Retry-After"), attempt));
+        continue;
+      }
+
+      console.error("Graph request failed", {
+        url,
+        status,
+        error: graphError
+      });
+      const error = new Error(`Graph request failed (${status})`);
+      error.graphStatus = status;
+      error.graphError = graphError;
+      error.graphTransient = retryable;
+      throw error;
+    }
+
+    let payload = {};
     if (rawText) {
       try {
-        errorPayload = JSON.parse(rawText);
+        payload = JSON.parse(rawText);
       } catch {
-        errorPayload = null;
+        throw new Error(`Graph response JSON parsing failed (${status})`);
       }
     }
 
-    const graphError = errorPayload?.error || rawText || "Unknown Graph error";
-    console.error("Graph request failed", {
-      url,
+    return {
       status,
-      error: graphError
-    });
-    const error = new Error(`Graph request failed (${status})`);
-    error.graphStatus = status;
-    error.graphError = graphError;
-    throw error;
+      data: payload
+    };
   }
 
-  let payload = {};
-  if (rawText) {
-    try {
-      payload = JSON.parse(rawText);
-    } catch {
-      throw new Error(`Graph response JSON parsing failed (${status})`);
-    }
-  }
-
-  return {
-    status,
-    data: payload
-  };
+  throw new Error("Graph request retry limit reached.");
 }
 
 async function resolveSharePointSite(token) {
@@ -1549,16 +1744,14 @@ function isAccessDeniedError(error) {
 
 async function handleSignOutClick() {
   stopLiveRefreshSchedule();
-  setAuthControlsEnabled(false);
+  setAuthControlsEnabled({ loginEnabled: false, refreshEnabled: false, signOutEnabled: false });
   clearDashboardData({ preserveFilters: false, render: true });
 
   try {
     if (msalInstance) {
-      const account = getPreferredAccount();
-      await msalInstance.logoutPopup({
-        account: account || undefined,
-        postLogoutRedirectUri: window.GRAPH_CONFIG?.redirectUri || window.location.href,
-        mainWindowRedirectUri: window.GRAPH_CONFIG?.redirectUri || window.location.href
+      await msalInstance.logoutRedirect({
+        account: msalInstance.getActiveAccount(),
+        postLogoutRedirectUri: getRedirectStartPage()
       });
       if (typeof msalInstance.setActiveAccount === "function") {
         msalInstance.setActiveAccount(null);
@@ -1571,7 +1764,55 @@ async function handleSignOutClick() {
     state.diagnostics.signedInUser = "N/A";
     renderDiagnostics();
     setAppView("login");
-    setAuthControlsEnabled(true);
+    setAuthControlsEnabled({ loginEnabled: true, refreshEnabled: false, signOutEnabled: false });
+  }
+}
+
+function getRetryDelayMs(retryAfterHeader, attempt) {
+  const baseDelay = 1000 * Math.pow(2, attempt);
+  if (!retryAfterHeader) {
+    return baseDelay;
+  }
+
+  const retryAfterSeconds = Number(retryAfterHeader);
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0) {
+    return Math.max(baseDelay, retryAfterSeconds * 1000);
+  }
+
+  const retryAfterDate = new Date(retryAfterHeader).getTime();
+  if (Number.isFinite(retryAfterDate)) {
+    const delta = retryAfterDate - Date.now();
+    if (delta > 0) {
+      return Math.max(baseDelay, delta);
+    }
+  }
+
+  return baseDelay;
+}
+
+async function waitForMs(delayMs) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, Math.max(0, delayMs));
+  });
+}
+
+async function withTimeout(promise, timeoutMs) {
+  let timeoutId = 0;
+  const timeoutPromise = new Promise((_, reject) => {
+    timeoutId = window.setTimeout(() => {
+      const timeoutError = new Error("SharePoint load timed out");
+      timeoutError.graphTransient = true;
+      timeoutError.loadTimedOut = true;
+      reject(timeoutError);
+    }, timeoutMs);
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) {
+      window.clearTimeout(timeoutId);
+    }
   }
 }
 
