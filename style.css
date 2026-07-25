@@ -747,7 +747,8 @@ body.dark .connection-diagnostics {
 .foia-table-wrap th,
 .foia-table-wrap td {
   min-width: 0;
-  vertical-align: top;
+  overflow: hidden;
+  vertical-align: middle;
 }
 
 .foia-table-wrap th {
@@ -763,7 +764,7 @@ body.dark .connection-diagnostics {
 
 .foia-table-wrap th:nth-child(2),
 .foia-table-wrap td:nth-child(2) {
-  width: 31%;
+  width: 28%;
 }
 
 .foia-table-wrap th:nth-child(3),
@@ -773,12 +774,12 @@ body.dark .connection-diagnostics {
 
 .foia-table-wrap th:nth-child(4),
 .foia-table-wrap td:nth-child(4) {
-  width: 10%;
+  width: 18%;
 }
 
 .foia-table-wrap th:nth-child(5),
 .foia-table-wrap td:nth-child(5) {
-  width: 11%;
+  width: 10%;
 }
 
 .foia-table-wrap th:nth-child(6),
@@ -788,12 +789,12 @@ body.dark .connection-diagnostics {
 
 .foia-table-wrap th:nth-child(7),
 .foia-table-wrap td:nth-child(7) {
-  width: 8%;
+  width: 9%;
 }
 
 .foia-table-wrap th:nth-child(8),
 .foia-table-wrap td:nth-child(8) {
-  width: 8%;
+  width: 4%;
 }
 
 .foia-table-wrap td:nth-child(2) {
@@ -809,6 +810,23 @@ body.dark .connection-diagnostics {
 .foia-table-wrap td:nth-child(7),
 .foia-table-wrap td:nth-child(8) {
   white-space: normal;
+}
+
+.foia-table-wrap td:nth-child(5),
+.foia-table-wrap td:nth-child(6),
+.foia-table-wrap td:nth-child(7),
+.foia-table-wrap td:nth-child(8) {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.foia-table-wrap .status-chip {
+  display: inline-block;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.2;
 }
 
 table {

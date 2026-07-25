@@ -749,7 +749,7 @@ function getLiveLoadFailureMessage(error) {
 
 function mapGraphItemToRecord(item, fieldMap) {
   const fields = item?.fields || {};
-  const foiaNumber = readMappedText(fields, fieldMap.foiaNumber) || `ITEM-${item.id}`;
+  const foiaNumber = readMappedText(fields, fieldMap.title) || "Not Assigned";
   const statusFromField = readMappedChoice(fields, fieldMap.status);
   const status = statusFromField || "Unknown";
 
@@ -804,6 +804,7 @@ function mapGraphItemToRecord(item, fieldMap) {
   };
 
   return {
+    id: normalizedRecord.id,
     request_id: normalizedRecord.foiaNumber,
     dci_work_unit: normalizedRecord.workUnit,
     workUnits: normalizedRecord.workUnits,
@@ -939,7 +940,7 @@ function buildSharePointFieldMap(columns) {
   );
 
   const fieldMap = {
-    foiaNumber: findInternalName(["Title"], internalNameByDisplayName, fallbackByInternalName),
+    title: findInternalName(["Title"], internalNameByDisplayName, fallbackByInternalName),
     status: findInternalName(["STATUS", "Status"], internalNameByDisplayName, fallbackByInternalName),
     division: findInternalName(["DIVISION", "Division"], internalNameByDisplayName, fallbackByInternalName),
     foirType: findInternalName(["FOIR TYPE", "FOIR Type"], internalNameByDisplayName, fallbackByInternalName),
@@ -964,7 +965,7 @@ function buildSharePointFieldMap(columns) {
   };
 
   const mappingTable = [
-    ["Title", fieldMap.foiaNumber],
+    ["Title", fieldMap.title],
     ["STATUS", fieldMap.status],
     ["DIVISION", fieldMap.division],
     ["FOIR TYPE", fieldMap.foirType],
@@ -1274,7 +1275,7 @@ function orderWorkUnits(values) {
 }
 
 function getRecordIdentity(record) {
-  return String(record.request_id || record.foiaNumber || record.id || "").trim();
+  return String(record.id || record.item_id || record.request_id || record.foiaNumber || "").trim();
 }
 
 function logWorkUnitValidationSummary(records, generatedRowCount) {
@@ -1606,6 +1607,7 @@ function setDashboardRecords(rawRecords) {
   state.availableWorkUnits = buildAvailableWorkUnits(state.records);
   logWorkUnitValidationSummary(state.records, state.availableWorkUnits.length);
   logDueDateValidationSummary(state.records);
+  logFoiaNumberValidationSummary(state.records);
   state.availableStatuses = buildAvailableStatuses(state.records, state.availableStatuses);
 
   if (previousWorkUnit === ALL_WORK_UNITS_OPTION || state.availableWorkUnits.includes(previousWorkUnit)) {
@@ -1773,8 +1775,8 @@ function applyFilters() {
     return searchable.includes(normalizedQuery);
   });
 
-  if (!state.filteredRecords.some((item) => item.request_id === state.selectedId)) {
-    state.selectedId = state.filteredRecords[0]?.request_id ?? null;
+  if (!state.filteredRecords.some((item) => getRecordIdentity(item) === state.selectedId)) {
+    state.selectedId = getRecordIdentity(state.filteredRecords[0]) || null;
   }
 
   syncStatusQueryString();
@@ -1982,7 +1984,8 @@ function renderRequestTable() {
   }
 
   elements.foiaTableBody.innerHTML = state.filteredRecords.map((record) => {
-    const selectedClass = record.request_id === state.selectedId ? "selected" : "";
+    const recordId = getRecordIdentity(record);
+    const selectedClass = recordId === state.selectedId ? "selected" : "";
     const statusClass = `status-${statusClassSuffix(record.status)}`;
     const completed = isDciCompleted(record);
     const daysOpen = daysInProgress(record);
@@ -1993,7 +1996,7 @@ function renderRequestTable() {
       : `${formatNumericMetric(daysOpen)}${hasValidDueDate(record) ? ` (${formatDueInShort(record, dueDelta)})` : ""}`;
 
     return `
-      <tr data-request-id="${escapeHtml(record.request_id)}" class="${selectedClass}" tabindex="0">
+      <tr data-record-id="${escapeHtml(recordId)}" class="${selectedClass}" tabindex="0">
         <td>${escapeHtml(record.request_id)}</td>
         <td>${escapeHtml(record.subject)}</td>
         <td>${escapeHtml(record.dci_work_unit)}</td>
@@ -2006,9 +2009,9 @@ function renderRequestTable() {
     `;
   }).join("");
 
-  Array.from(elements.foiaTableBody.querySelectorAll("tr[data-request-id]")).forEach((row) => {
+  Array.from(elements.foiaTableBody.querySelectorAll("tr[data-record-id]")).forEach((row) => {
     const select = () => {
-      state.selectedId = row.getAttribute("data-request-id");
+      state.selectedId = row.getAttribute("data-record-id");
       renderRequestTable();
       renderDetailPanel();
     };
@@ -2024,7 +2027,7 @@ function renderRequestTable() {
 }
 
 function renderDetailPanel() {
-  const selected = state.filteredRecords.find((record) => record.request_id === state.selectedId);
+  const selected = state.filteredRecords.find((record) => getRecordIdentity(record) === state.selectedId);
 
   if (!selected) {
     elements.detailContent.innerHTML = "<p class=\"placeholder\">Select a FOIA request to view detailed information.</p>";
@@ -2093,6 +2096,8 @@ function normalizeRecord(record) {
   const workUnit = getWorkUnitDisplay(workUnits);
   return {
     ...record,
+    id: String(record.id || record.item_id || "").trim(),
+    request_id: String(record.request_id || "").trim() || "Not Assigned",
     workUnits,
     workUnit,
     dci_work_unit: workUnit,
@@ -2108,6 +2113,22 @@ function normalizeRecord(record) {
 
 function normalizeWorkUnit(value) {
   return getWorkUnitDisplay(getWorkUnits(value));
+}
+
+function logFoiaNumberValidationSummary(records) {
+  const recordsWithNonblankTitle = records.filter((record) => {
+    const value = String(record.request_id || "").trim();
+    return value && value !== "Not Assigned";
+  }).length;
+  const recordsShowingNotAssigned = records.filter((record) => String(record.request_id || "").trim() === "Not Assigned").length;
+  const recordsUsingGeneratedPlaceholders = records.filter((record) => /^ITEM-\d+$/i.test(String(record.request_id || "").trim())).length;
+
+  console.info("FOIA number validation summary", {
+    totalRecords: records.length,
+    recordsWithNonblankTitle,
+    recordsShowingNotAssigned,
+    recordsStillUsingItemGeneratedPlaceholders: recordsUsingGeneratedPlaceholders
+  });
 }
 
 function normalizeStatus(status) {
