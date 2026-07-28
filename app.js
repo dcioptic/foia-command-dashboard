@@ -2333,7 +2333,7 @@ function renderCommandAlerts() {
     <li class="alert-item"><div class="alert-title">Due in 5 Days</div><div class="alert-value">${due5}</div></li>
     <li class="alert-item"><div class="alert-title">Due Today</div><div class="alert-value">${dueToday}</div></li>
     <li class="alert-item"><div class="alert-title">Overdue</div><div class="alert-value">${overdue}</div></li>
-    <li class="alert-item"><div class="alert-title">DCI Completed This Month</div><div class="alert-value">${completedThisMonth}</div></li>
+    <li class="alert-item"><div class="alert-title">Closed This Month</div><div class="alert-value">${completedThisMonth}</div></li>
   `;
 }
 
