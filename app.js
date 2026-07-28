@@ -60,6 +60,10 @@ const OPEN_STAGE_STATUSES = new Set([
   "2. IN PROGRESS",
   "4. WORK UNIT RESPONDED"
 ]);
+const PENDING_REDACTIONS_STATUSES = new Set([
+  "redactions",
+  "pending redactions"
+]);
 const PENDING_WITH_LEGAL_STATUS = "3. PENDING WITH LEGAL";
 const COMPLETED_STATUS = "5. DCI COMPLETED";
 const REDACTIONS_COMPLETED_STATUS = "REDACTIONS COMPLETED";
@@ -132,7 +136,7 @@ const elements = {
   authSecondaryButton: document.getElementById("authSecondaryButton"),
   kpiStatusNew: document.getElementById("kpiStatusNew"),
   kpiStatusInProgress: document.getElementById("kpiStatusInProgress"),
-  kpiStatusPendingLegal: document.getElementById("kpiStatusPendingLegal"),
+  kpiStatusPendingRedactions: document.getElementById("kpiStatusPendingRedactions"),
   kpiAvgDaysToReceive: document.getElementById("kpiAvgDaysToReceive"),
   kpiStatusCompleted: document.getElementById("kpiStatusCompleted"),
   kpiDue10: document.getElementById("kpiDue10"),
@@ -2272,6 +2276,7 @@ function renderKpis() {
   const now = new Date();
 
   const statusCounts = KPI_STATUS_ORDER.map((statusLabel) => countByStatus(records, statusLabel));
+  const pendingRedactionsCount = countPendingRedactions(records);
   const inProgressRecords = records.filter((record) => isInProgressMetricEligible(record));
   const dueToday = records.filter((record) => isDueToday(record));
   const due5 = records.filter((record) => isDueInFiveDays(record));
@@ -2297,7 +2302,7 @@ function renderKpis() {
 
   elements.kpiStatusNew.textContent = String(statusCounts[0]);
   elements.kpiStatusInProgress.textContent = String(statusCounts[1]);
-  elements.kpiStatusPendingLegal.textContent = String(statusCounts[2]);
+  elements.kpiStatusPendingRedactions.textContent = String(pendingRedactionsCount);
   elements.kpiAvgDaysToReceive.textContent = String(avgDaysToReceive.averageDays);
   elements.kpiStatusCompleted.textContent = String(statusCounts[4]);
   elements.kpiDue10.textContent = String(due10.length);
@@ -2386,6 +2391,7 @@ function renderWorkUnitSummary() {
     .map((workUnit) => {
       const unitRecords = records.filter((record) => recordHasWorkUnit(record, workUnit));
       const statusCounts = statusColumns.map((status) => unitRecords.filter((record) => statusEquals(record.status, status)).length);
+      const pendingRedactionsCount = countPendingRedactions(unitRecords);
       const inProgressRecords = unitRecords.filter((record) => isInProgressMetricEligible(record));
       const due10 = unitRecords.filter((record) => isDueInTenDays(record)).length;
       const due5 = unitRecords.filter((record) => isDueInFiveDays(record)).length;
@@ -2408,6 +2414,7 @@ function renderWorkUnitSummary() {
       return {
         workUnit,
         statusCounts,
+        pendingRedactionsCount,
         closedTotal,
         due10,
         due5,
@@ -2432,7 +2439,7 @@ function renderWorkUnitSummary() {
       <td>${escapeHtml(item.workUnit)}</td>
       <td title="1. NEW">${item.statusCounts[0]}</td>
       <td title="2. IN PROGRESS">${item.statusCounts[1]}</td>
-      <td title="3. PENDING WITH LEGAL">${item.statusCounts[2]}</td>
+      <td title="Pending Redactions">${item.pendingRedactionsCount}</td>
       <td title="4. WORK UNIT RESPONDED">${item.statusCounts[3]}</td>
       <td title="Operationally Closed">${item.closedTotal}</td>
       <td>${item.due10}</td>
@@ -2487,7 +2494,7 @@ function renderCommandAlerts() {
   elements.commandAlerts.innerHTML = `
     <li class="alert-item"><div class="alert-title">New Requests Awaiting Action</div><div class="alert-value">${countByStatus(records, "1. NEW")}</div></li>
     <li class="alert-item"><div class="alert-title">Requests Currently In Progress</div><div class="alert-value">${countByStatus(records, "2. IN PROGRESS")}</div></li>
-    <li class="alert-item"><div class="alert-title">Requests Pending With Legal</div><div class="alert-value">${countByStatus(records, "3. PENDING WITH LEGAL")}</div></li>
+    <li class="alert-item"><div class="alert-title">Requests Pending Redactions.</div><div class="alert-value">${countPendingRedactions(records)}</div></li>
     <li class="alert-item"><div class="alert-title">Work Units That Have Responded</div><div class="alert-value">${respondedWorkUnits.size}</div></li>
     <li class="alert-item"><div class="alert-title">Due in 10 Days</div><div class="alert-value">${due10}</div></li>
     <li class="alert-item"><div class="alert-title">Due in 5 Days</div><div class="alert-value">${due5}</div></li>
@@ -2985,6 +2992,15 @@ function countByStatus(records, statusLabel) {
     }
     return statusEquals(statusText, statusLabel);
   }).length;
+}
+
+function isPendingRedactions(record) {
+  const status = typeof record === "object" && record !== null ? record.status : record;
+  return PENDING_REDACTIONS_STATUSES.has(normalizeStatus(status));
+}
+
+function countPendingRedactions(records) {
+  return records.filter((record) => isPendingRedactions(record)).length;
 }
 
 function hasValidDueDate(record) {
