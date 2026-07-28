@@ -60,7 +60,9 @@ const OPEN_STAGE_STATUSES = new Set([
   "3. PENDING WITH LEGAL",
   "4. WORK UNIT RESPONDED"
 ]);
+const PENDING_WITH_LEGAL_STATUS = "3. PENDING WITH LEGAL";
 const COMPLETED_STATUS = "5. DCI COMPLETED";
+const PENDING_WITH_LEGAL_FALLBACK_TO_MODIFIED = Boolean(window.GRAPH_CONFIG?.pendingWithLegalDateFallbackToModified);
 const GRAPH_ROOT = "https://graph.microsoft.com/v1.0";
 const DEFAULT_GRAPH_SCOPES = ["User.Read", "Sites.Read.All"];
 const LIVE_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -1021,6 +1023,7 @@ function mapGraphItemToRecord(item, fieldMap) {
     modifiedDate: readMappedDate(fields, fieldMap.modified),
     dueDate,
     closedDate: readMappedDate(fields, fieldMap.closedDate),
+    pendingWithLegalDate: readMappedDate(fields, fieldMap.pendingWithLegalDate),
     notes: readMappedText(fields, fieldMap.notes)
   };
 
@@ -1038,6 +1041,7 @@ function mapGraphItemToRecord(item, fieldMap) {
     assigned_to: normalizedRecord.assignedTo,
     last_update: normalizedRecord.modifiedDate,
     closed_date: normalizedRecord.closedDate,
+    pending_with_legal_date: normalizedRecord.pendingWithLegalDate,
     notes: normalizedRecord.notes,
     foia_type: normalizedRecord.foiaType,
     response: normalizedRecord.response,
@@ -1182,8 +1186,32 @@ function buildSharePointFieldMap(columns) {
     modified: findInternalName(["Modified"], internalNameByDisplayName, fallbackByInternalName) || "Modified",
     dueDate: findInternalName(["DUE DATE", "DATE DUE", "DueDate", "due_date"], internalNameByDisplayName, fallbackByInternalName),
     closedDate: findInternalName(["CLOSED DATE", "DATE CLOSED", "Closed Date"], internalNameByDisplayName, fallbackByInternalName),
+    pendingWithLegalDate: findInternalName(
+      [
+        "PENDING WITH LEGAL DATE",
+        "Pending With Legal Date",
+        "DATE PENDING WITH LEGAL",
+        "Pending Legal Date",
+        "LEGAL PENDING DATE",
+        "DATE SENT TO LEGAL"
+      ],
+      internalNameByDisplayName,
+      fallbackByInternalName
+    ),
     notes: findInternalName(["NOTES", "Notes", "COMMENTS", "Comments"], internalNameByDisplayName, fallbackByInternalName)
   };
+
+  const configuredPendingLegalInternalName = String(window.GRAPH_CONFIG?.pendingWithLegalDateInternalName || "").trim();
+  if (configuredPendingLegalInternalName) {
+    const resolvedConfiguredPendingLegal = columns.find((column) => column.name === configuredPendingLegalInternalName);
+    if (resolvedConfiguredPendingLegal) {
+      fieldMap.pendingWithLegalDate = resolvedConfiguredPendingLegal.name;
+    } else {
+      console.warn("Configured pendingWithLegalDateInternalName was not found in SharePoint columns.", {
+        configuredPendingWithLegalDateInternalName: configuredPendingLegalInternalName
+      });
+    }
+  }
 
   const mappingTable = [
     ["Title", fieldMap.title],
@@ -1204,7 +1232,8 @@ function buildSharePointFieldMap(columns) {
     ["CRIMEPAD CASE #", fieldMap.crimepadCase],
     ["TRACS CASE #", fieldMap.tracsCase],
     ["OTHER CASE #", fieldMap.otherCase],
-    ["Modified", fieldMap.modified]
+    ["Modified", fieldMap.modified],
+    ["Pending With Legal Date", fieldMap.pendingWithLegalDate]
   ];
 
   console.table(
@@ -1877,6 +1906,7 @@ function setDashboardRecords(rawRecords) {
   state.availableWorkUnits = buildAvailableWorkUnits(state.records);
   logWorkUnitValidationSummary(state.records, state.availableWorkUnits.length);
   logDueDateValidationSummary(state.records);
+  logOperationalClosureValidationSummary(state.records);
   state.availableStatuses = buildAvailableStatuses(state.records, state.availableStatuses);
 
   if (previousWorkUnit === ALL_WORK_UNITS_OPTION || state.availableWorkUnits.includes(previousWorkUnit)) {
@@ -2380,11 +2410,12 @@ function renderRequestTable() {
     const selectedClass = recordId === state.selectedId ? "selected" : "";
     const statusClass = `status-${statusClassSuffix(record.status)}`;
     const completed = isDciCompleted(record);
+    const operationallyClosed = isOperationallyClosed(record);
     const daysOpen = daysInProgress(record);
-    const daysClose = daysToClose(record);
+    const daysToMilestone = daysToOperationalMilestone(record);
     const dueDelta = daysUntil(record.due_date);
-    const timingText = completed
-      ? formatNumericMetric(daysClose)
+    const timingText = operationallyClosed
+      ? formatNumericMetric(daysToMilestone)
       : `${formatNumericMetric(daysOpen)}${hasValidDueDate(record) ? ` (${formatDueInShort(record, dueDelta)})` : ""}`;
 
     return `
@@ -2394,7 +2425,7 @@ function renderRequestTable() {
         <td>${escapeHtml(record.dci_work_unit)}</td>
         <td><span class="status-chip ${statusClass}">${escapeHtml(record.status)}</span></td>
         <td>${record.received_date ? formatDate(record.received_date) : ""}</td>
-        <td>${completed ? "" : (record.due_date ? formatDate(record.due_date) : "")}</td>
+        <td>${operationallyClosed ? "" : (record.due_date ? formatDate(record.due_date) : "")}</td>
         <td>${completed && record.closed_date ? formatDate(record.closed_date) : ""}</td>
         <td>${timingText}</td>
       </tr>
@@ -2427,8 +2458,10 @@ function renderDetailPanel() {
   }
 
   const completed = isDciCompleted(selected);
+  const pendingWithLegal = isPendingWithLegal(selected);
+  const operationallyClosed = isOperationallyClosed(selected);
   const dueInDays = daysUntil(selected.due_date);
-  const closeDays = daysToClose(selected);
+  const milestoneDays = daysToOperationalMilestone(selected);
   const details = [
     ["FOIA Number", selected.request_id],
     ["Subject", selected.subject],
@@ -2440,17 +2473,21 @@ function renderDetailPanel() {
     details.push(["Date DCI Received", formatDate(selected.received_date)]);
   }
 
-  if (!completed && selected.due_date) {
+  if (!operationallyClosed && selected.due_date) {
     details.push(["Due Date", `${formatDate(selected.due_date)} (${formatDueIn(selected, dueInDays)})`]);
+  } else if (pendingWithLegal && selected.due_date) {
+    details.push(["Due Date", formatDate(selected.due_date)]);
   }
   if (completed && selected.closed_date) {
     details.push(["Date Closed", formatDate(selected.closed_date)]);
   }
 
-  if (!completed) {
-    details.push(["Days In Progress", formatNumericMetric(daysInProgress(selected))]);
+  if (pendingWithLegal) {
+    details.push(["Days to Pending Legal", formatNumericMetric(milestoneDays)]);
+  } else if (completed) {
+    details.push(["Days to Complete", formatNumericMetric(milestoneDays)]);
   } else {
-    details.push(["Days To Complete", formatNumericMetric(closeDays)]);
+    details.push(["Days In Progress", formatNumericMetric(daysInProgress(selected))]);
   }
 
   if (selected.assigned_to) {
@@ -2499,7 +2536,8 @@ function normalizeRecord(record) {
     created_date: parseDate(record.created_date),
     due_date: parseDate(record.due_date),
     last_update: parseDate(record.last_update),
-    closed_date: record.closed_date ? parseDate(record.closed_date) : null
+    closed_date: record.closed_date ? parseDate(record.closed_date) : null,
+    pending_with_legal_date: parseDate(record.pending_with_legal_date)
   };
 }
 
@@ -2537,7 +2575,7 @@ function normalizeStatus(status) {
     return COMPLETED_STATUS;
   }
   if (normalized === "in review") {
-    return "3. PENDING WITH LEGAL";
+    return PENDING_WITH_LEGAL_STATUS;
   }
   if (normalized === "open" || normalized === "pending" || normalized === "active") {
     return "2. IN PROGRESS";
@@ -2574,6 +2612,15 @@ function isDciCompleted(record) {
   return normalizeStatusForComparison(status) === "dci completed";
 }
 
+function isPendingWithLegal(record) {
+  const status = typeof record === "object" && record !== null ? record.status : record;
+  return normalizeStatusForComparison(status) === "pending with legal";
+}
+
+function isOperationallyClosed(record) {
+  return isPendingWithLegal(record) || isDciCompleted(record);
+}
+
 function isOpenStageStatus(status) {
   return Array.from(OPEN_STAGE_STATUSES).some((knownStatus) => statusEquals(status, knownStatus));
 }
@@ -2583,7 +2630,7 @@ function isCompletedStatus(status) {
 }
 
 function isDeadlineEligible(record) {
-  return hasValidDueDate(record) && !isDciCompleted(record);
+  return hasValidDueDate(record) && !isOperationallyClosed(record);
 }
 
 function isDueToday(record) {
@@ -2608,11 +2655,11 @@ function isDueInTenDays(record) {
 
 function isOverdue(record) {
   const dueDate = parseDate(record?.dueDate || record?.due_date);
-  return Boolean(dueDate) && dueDate < startOfToday() && !isDciCompleted(record);
+  return Boolean(dueDate) && dueDate < startOfToday() && !isOperationallyClosed(record);
 }
 
 function isInProgressMetricEligible(record) {
-  return !isDciCompleted(record);
+  return !isOperationallyClosed(record);
 }
 
 function getIntakeDate(record) {
@@ -2693,16 +2740,45 @@ function addDays(date, amount) {
   return startOfDay(next);
 }
 
-function daysToClose(record) {
+function getPendingWithLegalDate(record) {
+  const explicitPendingWithLegalDate = record?.pending_with_legal_date;
+  if (explicitPendingWithLegalDate instanceof Date && !Number.isNaN(explicitPendingWithLegalDate.getTime())) {
+    return explicitPendingWithLegalDate;
+  }
+
+  if (PENDING_WITH_LEGAL_FALLBACK_TO_MODIFIED) {
+    const modifiedDate = record?.last_update;
+    if (modifiedDate instanceof Date && !Number.isNaN(modifiedDate.getTime())) {
+      return modifiedDate;
+    }
+  }
+
+  return null;
+}
+
+function daysToOperationalMilestone(record) {
   const opened = getProgressStartDate(record);
-  const closed = record.closed_date;
   if (!(opened instanceof Date) || Number.isNaN(opened.getTime())) {
     return Number.NaN;
   }
-  if (!(closed instanceof Date) || Number.isNaN(closed.getTime())) {
-    return Number.NaN;
+
+  if (isDciCompleted(record)) {
+    const closed = record.closed_date;
+    if (!(closed instanceof Date) || Number.isNaN(closed.getTime())) {
+      return Number.NaN;
+    }
+    return Math.max(0, daysBetween(opened, closed));
   }
-  return daysBetween(opened, closed);
+
+  if (isPendingWithLegal(record)) {
+    const pendingWithLegalDate = getPendingWithLegalDate(record);
+    if (!(pendingWithLegalDate instanceof Date) || Number.isNaN(pendingWithLegalDate.getTime())) {
+      return Number.NaN;
+    }
+    return Math.max(0, daysBetween(opened, pendingWithLegalDate));
+  }
+
+  return Number.NaN;
 }
 
 function isWithinMonth(date, referenceDate) {
@@ -2748,7 +2824,7 @@ function daysInProgress(record) {
   if (!(startDate instanceof Date) || Number.isNaN(startDate.getTime())) {
     return Number.NaN;
   }
-  return daysBetween(startDate, today);
+  return Math.max(0, daysBetween(startDate, today));
 }
 
 function getCurrentMonthMetricScopeRecords() {
@@ -2940,8 +3016,9 @@ function formatDueInShort(record, days) {
 function logDueDateValidationSummary(records) {
   const recordsWithValidDueDates = records.filter((record) => hasValidDueDate(record)).length;
   const dciCompletedRecords = records.filter((record) => isDciCompleted(record)).length;
+  const pendingWithLegalRecords = records.filter((record) => isPendingWithLegal(record)).length;
   const nonCompletedPastDueRecords = records.filter((record) => {
-    if (!hasValidDueDate(record) || isDciCompleted(record)) {
+    if (!hasValidDueDate(record) || isOperationallyClosed(record)) {
       return false;
     }
     return parseDate(record.due_date) < startOfToday();
@@ -2950,9 +3027,36 @@ function logDueDateValidationSummary(records) {
 
   console.info("Due date validation summary", {
     totalRecordsWithValidDueDates: recordsWithValidDueDates,
+    recordsWithStatusPendingWithLegal: pendingWithLegalRecords,
     recordsWithStatusDciCompleted: dciCompletedRecords,
-    nonDciCompletedRecordsWithPastDueDates: nonCompletedPastDueRecords,
+    nonOperationallyClosedRecordsWithPastDueDates: nonCompletedPastDueRecords,
     finalOverdueCount
+  });
+}
+
+function logOperationalClosureValidationSummary(records) {
+  const pendingWithLegalRecords = records.filter((record) => isPendingWithLegal(record));
+  const dciCompletedRecords = records.filter((record) => isDciCompleted(record));
+  const operationallyClosedRecords = records.filter((record) => isOperationallyClosed(record));
+  const overdueAfterExclusions = records.filter((record) => isOverdue(record));
+
+  const upcomingEligibleRecords = records.filter((record) => isDeadlineEligible(record));
+  const pendingWithLegalRemovedFromUpcoming = pendingWithLegalRecords.filter((record) => hasValidDueDate(record)).length;
+  const pendingWithLegalWithValidDate = pendingWithLegalRecords.filter((record) => {
+    const pendingWithLegalDate = getPendingWithLegalDate(record);
+    return pendingWithLegalDate instanceof Date && !Number.isNaN(pendingWithLegalDate.getTime());
+  }).length;
+  const pendingWithLegalMissingDate = pendingWithLegalRecords.length - pendingWithLegalWithValidDate;
+
+  console.info("Operational status validation summary", {
+    pendingWithLegalRecords: pendingWithLegalRecords.length,
+    dciCompletedRecords: dciCompletedRecords.length,
+    operationallyClosedRecords: operationallyClosedRecords.length,
+    overdueAfterOperationalClosedExclusions: overdueAfterExclusions.length,
+    pendingWithLegalRemovedFromUpcomingDeadlines: pendingWithLegalRemovedFromUpcoming,
+    pendingWithLegalRecordsWithValidPendingLegalDate: pendingWithLegalWithValidDate,
+    pendingWithLegalRecordsMissingPendingLegalDate: pendingWithLegalMissingDate,
+    upcomingDeadlineEligibleRecordsAfterExclusions: upcomingEligibleRecords.length
   });
 }
 
