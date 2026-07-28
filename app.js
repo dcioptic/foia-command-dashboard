@@ -131,7 +131,7 @@ const elements = {
   kpiStatusNew: document.getElementById("kpiStatusNew"),
   kpiStatusInProgress: document.getElementById("kpiStatusInProgress"),
   kpiStatusPendingLegal: document.getElementById("kpiStatusPendingLegal"),
-  kpiStatusUnitResponded: document.getElementById("kpiStatusUnitResponded"),
+  kpiAvgDaysToReceive: document.getElementById("kpiAvgDaysToReceive"),
   kpiStatusCompleted: document.getElementById("kpiStatusCompleted"),
   kpiDue10: document.getElementById("kpiDue10"),
   kpiDue5: document.getElementById("kpiDue5"),
@@ -2227,6 +2227,7 @@ function renderKpis() {
   const due5 = records.filter((record) => isDueInFiveDays(record));
   const due10 = records.filter((record) => isDueInTenDays(record));
   const overdue = records.filter((record) => isOverdue(record));
+  const avgDaysToReceive = calculateAverageDaysToReceive(records);
 
   const inProgressDurations = inProgressRecords
     .map((record) => daysInProgress(record))
@@ -2242,7 +2243,7 @@ function renderKpis() {
   elements.kpiStatusNew.textContent = String(statusCounts[0]);
   elements.kpiStatusInProgress.textContent = String(statusCounts[1]);
   elements.kpiStatusPendingLegal.textContent = String(statusCounts[2]);
-  elements.kpiStatusUnitResponded.textContent = String(statusCounts[3]);
+  elements.kpiAvgDaysToReceive.textContent = `${avgDaysToReceive.averageDays} Days`;
   elements.kpiStatusCompleted.textContent = String(statusCounts[4]);
   elements.kpiDue10.textContent = String(due10.length);
   elements.kpiDue5.textContent = String(due5.length);
@@ -2252,7 +2253,55 @@ function renderKpis() {
   elements.kpiReceivedThisMonth.textContent = String(receivedThisMonth);
   elements.kpiCompletedThisMonth.textContent = String(completedThisMonth);
 
+  logAverageDaysToReceiveSummary(avgDaysToReceive);
   elements.kpiScopeSummary.textContent = buildFilterSummaryText();
+}
+
+function calculateAverageDaysToReceive(records) {
+  let includedRecords = 0;
+  let skippedStampedByLegalBlank = 0;
+  let skippedDateDciReceivedBlank = 0;
+  let totalDays = 0;
+
+  records.forEach((record) => {
+    const stampedByLegalDate = record.date_stamped;
+    const dateDciReceived = record.received_date;
+
+    if (!(stampedByLegalDate instanceof Date) || Number.isNaN(stampedByLegalDate.getTime())) {
+      skippedStampedByLegalBlank += 1;
+      return;
+    }
+
+    if (!(dateDciReceived instanceof Date) || Number.isNaN(dateDciReceived.getTime())) {
+      skippedDateDciReceivedBlank += 1;
+      return;
+    }
+
+    const dayDifference = daysBetween(stampedByLegalDate, dateDciReceived);
+    if (!Number.isFinite(dayDifference) || dayDifference < 0) {
+      return;
+    }
+
+    totalDays += dayDifference;
+    includedRecords += 1;
+  });
+
+  const averageDays = includedRecords ? Math.round(totalDays / includedRecords) : 0;
+  return {
+    includedRecords,
+    skippedStampedByLegalBlank,
+    skippedDateDciReceivedBlank,
+    averageDays
+  };
+}
+
+function logAverageDaysToReceiveSummary(summary) {
+  console.info("Average days to receive validation summary", {
+    recordsIncludedInCalculation: summary.includedRecords,
+    recordsSkippedStampedByLegalBlank: summary.skippedStampedByLegalBlank,
+    recordsSkippedDateDciReceivedBlank: summary.skippedDateDciReceivedBlank,
+    calculatedAverageDaysToReceive: summary.averageDays
+  });
 }
 
 function renderWorkUnitSummary() {
