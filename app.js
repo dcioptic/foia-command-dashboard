@@ -990,7 +990,7 @@ function mapGraphItemToRecord(item, fieldMap) {
   const subject = subjectValue || foiaNumber;
 
   const createdDate = readMappedDate(fields, fieldMap.created);
-  const dateStamped = readMappedDate(fields, fieldMap.dateStamped);
+  const dateStamped = readMappedDate(fields, fieldMap.dateStampedByLegal);
   const receivedDate = readMappedDate(fields, fieldMap.dateReceived) || createdDate;
   const fiveDaysOut = readMappedDate(fields, fieldMap.fiveDaysOut);
   const tenDaysOut = readMappedDate(fields, fieldMap.tenDaysOut);
@@ -1175,7 +1175,17 @@ function buildSharePointFieldMap(columns) {
     foirType: findInternalName(["FOIR TYPE", "FOIR Type"], internalNameByDisplayName, fallbackByInternalName),
     foiaType: findInternalName(["FOIA TYPE", "FOIR TYPE", "FOIA Type"], internalNameByDisplayName, fallbackByInternalName),
     attachments: findInternalName(["Attachments"], internalNameByDisplayName, fallbackByInternalName),
-    dateStamped: findInternalName(["DATE STAMPED", "Date Stamped"], internalNameByDisplayName, fallbackByInternalName),
+    dateStampedByLegal: findInternalName(
+      [
+        "DATE STAMPED",
+        "Date Stamped",
+        "Stamped by Legal",
+        "DATE STAMPED BY LEGAL",
+        "Date Stamped by Legal"
+      ],
+      internalNameByDisplayName,
+      fallbackByInternalName
+    ),
     dateReceived: findInternalName(["DATE DCI RECEIVED", "Date DCI Received"], internalNameByDisplayName, fallbackByInternalName),
     created: findInternalName(["Created"], internalNameByDisplayName, fallbackByInternalName) || "Created",
     fiveDaysOut: findInternalName(["5 Days Out", "Five Days Out"], internalNameByDisplayName, fallbackByInternalName),
@@ -1240,6 +1250,18 @@ function buildSharePointFieldMap(columns) {
     }
   }
 
+  const configuredDateStampedByLegalInternalName = String(window.GRAPH_CONFIG?.dateStampedByLegalInternalName || "").trim();
+  if (configuredDateStampedByLegalInternalName) {
+    const resolvedConfiguredStampedByLegal = columns.find((column) => column.name === configuredDateStampedByLegalInternalName);
+    if (resolvedConfiguredStampedByLegal) {
+      fieldMap.dateStampedByLegal = resolvedConfiguredStampedByLegal.name;
+    } else {
+      console.warn("Configured dateStampedByLegalInternalName was not found in SharePoint columns.", {
+        configuredDateStampedByLegalInternalName
+      });
+    }
+  }
+
   const mappingTable = [
     ["Title", fieldMap.title],
     ["STATUS", fieldMap.status],
@@ -1247,7 +1269,7 @@ function buildSharePointFieldMap(columns) {
     ["FOIR TYPE", fieldMap.foirType],
     ["FOIA TYPE", fieldMap.foiaType],
     ["Attachments", fieldMap.attachments],
-    ["DATE STAMPED", fieldMap.dateStamped],
+    ["DATE STAMPED BY LEGAL", fieldMap.dateStampedByLegal],
     ["DATE DCI RECEIVED", fieldMap.dateReceived],
     ["Created", fieldMap.created],
     ["5 Days Out", fieldMap.fiveDaysOut],
@@ -2276,7 +2298,7 @@ function renderKpis() {
   elements.kpiStatusNew.textContent = String(statusCounts[0]);
   elements.kpiStatusInProgress.textContent = String(statusCounts[1]);
   elements.kpiStatusPendingLegal.textContent = String(statusCounts[2]);
-  elements.kpiAvgDaysToReceive.textContent = `${avgDaysToReceive.averageDays} Days`;
+  elements.kpiAvgDaysToReceive.textContent = String(avgDaysToReceive.averageDays);
   elements.kpiStatusCompleted.textContent = String(statusCounts[4]);
   elements.kpiDue10.textContent = String(due10.length);
   elements.kpiDue5.textContent = String(due5.length);
@@ -2291,27 +2313,38 @@ function renderKpis() {
 }
 
 function calculateAverageDaysToReceive(records) {
-  let includedRecords = 0;
-  let skippedStampedByLegalBlank = 0;
-  let skippedDateDciReceivedBlank = 0;
+  let validStampedDates = 0;
+  let validDciReceivedDates = 0;
+  let recordsWithBothDates = 0;
+  let recordsExcludedNegativeDifferences = 0;
   let totalDays = 0;
+  let includedRecords = 0;
 
   records.forEach((record) => {
     const stampedByLegalDate = record.date_stamped;
     const dateDciReceived = record.received_date;
+    const stampedIsValid = stampedByLegalDate instanceof Date && !Number.isNaN(stampedByLegalDate.getTime());
+    const receivedIsValid = dateDciReceived instanceof Date && !Number.isNaN(dateDciReceived.getTime());
 
-    if (!(stampedByLegalDate instanceof Date) || Number.isNaN(stampedByLegalDate.getTime())) {
-      skippedStampedByLegalBlank += 1;
+    if (stampedIsValid) {
+      validStampedDates += 1;
+    }
+
+    if (receivedIsValid) {
+      validDciReceivedDates += 1;
+    }
+
+    if (!stampedIsValid || !receivedIsValid) {
       return;
     }
 
-    if (!(dateDciReceived instanceof Date) || Number.isNaN(dateDciReceived.getTime())) {
-      skippedDateDciReceivedBlank += 1;
-      return;
-    }
+    recordsWithBothDates += 1;
 
     const dayDifference = daysBetween(stampedByLegalDate, dateDciReceived);
     if (!Number.isFinite(dayDifference) || dayDifference < 0) {
+      if (Number.isFinite(dayDifference) && dayDifference < 0) {
+        recordsExcludedNegativeDifferences += 1;
+      }
       return;
     }
 
@@ -2321,18 +2354,21 @@ function calculateAverageDaysToReceive(records) {
 
   const averageDays = includedRecords ? Math.round(totalDays / includedRecords) : 0;
   return {
-    includedRecords,
-    skippedStampedByLegalBlank,
-    skippedDateDciReceivedBlank,
+    validStampedDates,
+    validDciReceivedDates,
+    recordsWithBothDates,
+    recordsExcludedNegativeDifferences,
     averageDays
   };
 }
 
 function logAverageDaysToReceiveSummary(summary) {
   console.info("Average days to receive validation summary", {
-    recordsIncludedInCalculation: summary.includedRecords,
-    recordsSkippedStampedByLegalBlank: summary.skippedStampedByLegalBlank,
-    recordsSkippedDateDciReceivedBlank: summary.skippedDateDciReceivedBlank,
+    resolvedDateStampedByLegalInternalName: state.liveConnection.fieldMap?.dateStampedByLegal || "(unmapped)",
+    recordsWithValidStampedDates: summary.validStampedDates,
+    recordsWithValidDciReceivedDates: summary.validDciReceivedDates,
+    recordsWithBothDates: summary.recordsWithBothDates,
+    recordsExcludedForNegativeDifferences: summary.recordsExcludedNegativeDifferences,
     calculatedAverageDaysToReceive: summary.averageDays
   });
 }
