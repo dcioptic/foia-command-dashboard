@@ -1024,6 +1024,7 @@ function mapGraphItemToRecord(item, fieldMap) {
     crimepadCase: readMappedText(fields, fieldMap.crimepadCase),
     tracsCase: readMappedText(fields, fieldMap.tracsCase),
     otherCase: readMappedText(fields, fieldMap.otherCase),
+    // Modified reflects the last item edit timestamp, not necessarily when status changed.
     modifiedDate: readMappedDate(fields, fieldMap.modified),
     dueDate,
     closedDate: readMappedDate(fields, fieldMap.closedDate),
@@ -1119,11 +1120,8 @@ async function fetchAllListColumns(token, siteId, listId) {
   console.table(
     allColumns.map((column) => ({
       displayName: column.displayName || "",
-      name: column.name || "",
-      id: column.id || "",
-      hidden: Boolean(column.hidden),
-      readOnly: Boolean(column.readOnly),
-      detectedType: detectColumnType(column)
+      internalName: column.name || "",
+      detectedFieldType: detectColumnType(column)
     }))
   );
 
@@ -1213,13 +1211,18 @@ function buildSharePointFieldMap(columns) {
     otherCase: findInternalName(["OTHER CASE #", "OTHER CASE"], internalNameByDisplayName, fallbackByInternalName),
     modified: findInternalName(["Modified"], internalNameByDisplayName, fallbackByInternalName) || "Modified",
     dueDate: findInternalName(["DUE DATE", "DATE DUE", "DueDate", "due_date"], internalNameByDisplayName, fallbackByInternalName),
-    closedDate: findInternalName(["CLOSED DATE", "DATE CLOSED", "Closed Date"], internalNameByDisplayName, fallbackByInternalName),
+    closedDate: findInternalName(
+      ["CLOSED DATE", "DATE CLOSED", "Closed Date", "DCI COMPLETED DATE", "Date DCI Completed"],
+      internalNameByDisplayName,
+      fallbackByInternalName
+    ),
     closedDateFallback: "",
     pendingWithLegalDate: findInternalName(
       [
         "PENDING WITH LEGAL DATE",
         "Pending With Legal Date",
         "DATE PENDING WITH LEGAL",
+        "Legal Date",
         "Pending Legal Date",
         "LEGAL PENDING DATE",
         "DATE SENT TO LEGAL"
@@ -1366,7 +1369,71 @@ function buildSharePointFieldMap(columns) {
     }))
   );
 
+  logOperationalCloseDateColumnAudit(columns, fieldMap);
+  logMissingOperationalCloseDateFieldWarning(fieldMap);
+
   return fieldMap;
+}
+
+function logOperationalCloseDateColumnAudit(columns, fieldMap) {
+  const candidateNames = [
+    "Pending with Legal Date",
+    "Date Pending with Legal",
+    "Legal Date",
+    "Date Sent to Legal",
+    "DATE PENDING WITH LEGAL",
+    "Redactions Completed Date",
+    "Date Redactions Completed",
+    "Redaction Complete Date",
+    "DATE REDACTIONS COMPLETED",
+    "Date Closed",
+    "DATE CLOSED",
+    "DCI Completed Date",
+    "Date DCI Completed"
+  ];
+
+  const normalizedCandidates = new Set(candidateNames.map((name) => normalizeColumnLabel(name)));
+  const matchingColumns = columns.filter((column) => {
+    const displayNormalized = normalizeColumnLabel(column.displayName || "");
+    const internalNormalized = normalizeColumnLabel(column.name || "");
+    return normalizedCandidates.has(displayNormalized) || normalizedCandidates.has(internalNormalized);
+  });
+
+  console.table(
+    matchingColumns.map((column) => ({
+      displayName: column.displayName || "",
+      internalName: column.name || "",
+      detectedFieldType: detectColumnType(column)
+    }))
+  );
+
+  console.info("Operational close date mapping audit", {
+    resolvedPendingWithLegalDateInternalName: fieldMap.pendingWithLegalDate || "(unmapped)",
+    resolvedRedactionsCompletedDateInternalName: fieldMap.redactionsCompletedDate || "(unmapped)",
+    resolvedDateClosedInternalName: fieldMap.closedDate || "(unmapped)"
+  });
+}
+
+function logMissingOperationalCloseDateFieldWarning(fieldMap) {
+  const missingFields = [];
+  if (!fieldMap.pendingWithLegalDate) {
+    missingFields.push("Pending with Legal date");
+  }
+  if (!fieldMap.redactionsCompletedDate) {
+    missingFields.push("Redactions Completed date");
+  }
+  if (!fieldMap.closedDate) {
+    missingFields.push("Date Closed / DCI Completed date");
+  }
+
+  if (!missingFields.length) {
+    return;
+  }
+
+  console.warn("Operational close date field mapping is incomplete. Closed This Month may undercount where status-specific dates are unavailable.", {
+    missingDateFields: missingFields,
+    note: "Modified is the last item edit timestamp and is not a reliable status-change date."
+  });
 }
 
 function readMappedValue(fields, internalName) {
@@ -2983,11 +3050,7 @@ function getPendingWithLegalDate(record) {
   if (explicitPendingWithLegalDate) {
     return explicitPendingWithLegalDate;
   }
-
-  const configuredPendingWithLegalFallbackDate = parseDate(
-    record?.pendingWithLegalDateFallback || record?.pending_with_legal_fallback_date
-  );
-  return configuredPendingWithLegalFallbackDate || null;
+  return null;
 }
 
 function getRedactionsCompletedDate(record) {
@@ -2997,11 +3060,7 @@ function getRedactionsCompletedDate(record) {
   if (explicitRedactionsCompletedDate) {
     return explicitRedactionsCompletedDate;
   }
-
-  const configuredRedactionsCompletedFallbackDate = parseDate(
-    record?.redactionsCompletedDateFallback || record?.redactions_completed_fallback_date
-  );
-  return configuredRedactionsCompletedFallbackDate || null;
+  return null;
 }
 
 function getDciCompletedDate(record) {
@@ -3009,12 +3068,12 @@ function getDciCompletedDate(record) {
   if (explicitClosedDate) {
     return explicitClosedDate;
   }
-
-  const configuredClosedDateFallback = parseDate(record?.closedDateFallback || record?.closed_date_fallback);
-  return configuredClosedDateFallback || null;
+  return null;
 }
 
 function getOperationalCloseDate(record) {
+  // Accurate status-change dating requires dedicated status date columns, workflow stamping,
+  // or SharePoint version-history comparisons. Do not infer using generic edit timestamps.
   if (isDciCompleted(record)) {
     return getDciCompletedDate(record);
   }
@@ -3125,15 +3184,7 @@ function getCurrentMonthMetricScopeRecords() {
 }
 
 function getClosedThisMonthScopeRecords() {
-  return state.records.filter((record) => {
-    if (state.selectedWorkUnit !== ALL_WORK_UNITS_OPTION && !recordHasWorkUnit(record, state.selectedWorkUnit)) {
-      return false;
-    }
-    if (state.selectedStatus !== ALL_STATUSES_OPTION && !statusEquals(record.status, state.selectedStatus)) {
-      return false;
-    }
-    return true;
-  });
+  return state.scopedRecords;
 }
 
 function isDateInCurrentMonth(value) {
@@ -3155,38 +3206,38 @@ function countOperationallyClosedThisMonth(records) {
 }
 
 function logClosedThisMonthDiagnostics(records, closedThisMonthValue) {
+  const pendingWithLegalRecords = records.filter((record) => isPendingWithLegal(record));
+  const dciCompletedRecords = records.filter((record) => isDciCompleted(record));
+  const redactionsCompletedRecords = records.filter((record) => isRedactionsCompleted(record));
+
+  const pendingWithLegalWithValidCloseDate = pendingWithLegalRecords.filter((record) => Boolean(getOperationalCloseDate(record))).length;
+  const dciCompletedWithValidCloseDate = dciCompletedRecords.filter((record) => Boolean(getOperationalCloseDate(record))).length;
+  const redactionsCompletedWithValidCloseDate = redactionsCompletedRecords.filter((record) => Boolean(getOperationalCloseDate(record))).length;
+
+  const pendingWithLegalMissingCloseDate = pendingWithLegalRecords.length - pendingWithLegalWithValidCloseDate;
+  const redactionsCompletedMissingCloseDate = redactionsCompletedRecords.length - redactionsCompletedWithValidCloseDate;
+
   const operationallyClosedRecords = records.filter((record) => isOperationallyClosed(record));
-  const pendingWithLegalWithValidCloseDate = records.filter((record) => {
-    if (!isPendingWithLegal(record)) {
-      return false;
-    }
-    return Boolean(getOperationalCloseDate(record));
-  }).length;
-  const dciCompletedWithValidCloseDate = records.filter((record) => {
-    if (!isDciCompleted(record)) {
-      return false;
-    }
-    return Boolean(getOperationalCloseDate(record));
-  }).length;
-  const redactionsCompletedWithValidCloseDate = records.filter((record) => {
-    if (!isRedactionsCompleted(record)) {
-      return false;
-    }
-    return Boolean(getOperationalCloseDate(record));
-  }).length;
+  const closedRecordsMissingUsableCloseDate = operationallyClosedRecords.filter((record) => !getOperationalCloseDate(record)).length;
   const operationallyClosedInCurrentMonth = operationallyClosedRecords.filter((record) => {
     const closeDate = getOperationalCloseDate(record);
     return isDateInCurrentMonth(closeDate);
   }).length;
 
   console.info("Closed This Month KPI diagnostics", {
-    totalOperationallyClosedRecords: operationallyClosedRecords.length,
-    pendingWithLegalRecordsWithValidCloseDate: pendingWithLegalWithValidCloseDate,
-    dciCompletedRecordsWithValidCloseDate: dciCompletedWithValidCloseDate,
-    redactionsCompletedRecordsWithValidCloseDate: redactionsCompletedWithValidCloseDate,
+    totalPendingWithLegalRecords: pendingWithLegalRecords.length,
+    pendingWithLegalRecordsWithValidStatusDate: pendingWithLegalWithValidCloseDate,
+    pendingWithLegalRecordsMissingStatusDate: pendingWithLegalMissingCloseDate,
+    totalDciCompletedRecords: dciCompletedRecords.length,
+    dciCompletedRecordsWithValidDateClosed: dciCompletedWithValidCloseDate,
+    totalRedactionsCompletedRecords: redactionsCompletedRecords.length,
+    redactionsCompletedRecordsWithValidStatusDate: redactionsCompletedWithValidCloseDate,
+    redactionsCompletedRecordsMissingStatusDate: redactionsCompletedMissingCloseDate,
     operationallyClosedRecordsInCurrentMonth: operationallyClosedInCurrentMonth,
     closedThisMonthKpiValue: closedThisMonthValue
   });
+
+  console.info(`Closed records missing a usable close date: ${closedRecordsMissingUsableCloseDate}`);
 }
 
 function getTimePeriodLabel(value) {
