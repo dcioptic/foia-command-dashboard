@@ -2273,9 +2273,10 @@ function renderAll() {
 
 function renderKpis() {
   const records = state.scopedRecords;
-  const now = new Date();
+  const monthReference = getSelectedMonthReferenceDate();
 
   const statusCounts = KPI_STATUS_ORDER.map((statusLabel) => countByStatus(records, statusLabel));
+  const operationallyClosedCount = records.filter((record) => isOperationallyClosed(record)).length;
   const pendingRedactionsCount = countPendingRedactions(records);
   const inProgressRecords = records.filter((record) => isInProgressMetricEligible(record));
   const dueToday = records.filter((record) => isDueToday(record));
@@ -2292,19 +2293,19 @@ function renderKpis() {
     : 0;
 
   const monthScopeRecords = getCurrentMonthMetricScopeRecords();
-  const receivedThisMonth = monthScopeRecords.filter((record) => isWithinMonth(getIntakeDate(record), now)).length;
+  const receivedThisMonth = monthScopeRecords.filter((record) => isWithinMonth(getIntakeDate(record), monthReference)).length;
   const completedThisMonth = monthScopeRecords.filter((record) => {
     if (!isOperationallyClosed(record)) {
       return false;
     }
-    return isWithinMonth(getOperationalClosedDate(record), now);
+    return isWithinMonth(getOperationalClosedDate(record), monthReference);
   }).length;
 
   elements.kpiStatusNew.textContent = String(statusCounts[0]);
   elements.kpiStatusInProgress.textContent = String(statusCounts[1]);
   elements.kpiStatusPendingRedactions.textContent = String(pendingRedactionsCount);
   elements.kpiAvgDaysToReceive.textContent = String(avgDaysToReceive.averageDays);
-  elements.kpiStatusCompleted.textContent = String(statusCounts[4]);
+  elements.kpiStatusCompleted.textContent = String(operationallyClosedCount);
   elements.kpiDue10.textContent = String(due10.length);
   elements.kpiDue5.textContent = String(due5.length);
   elements.kpiDueToday.textContent = String(dueToday.length);
@@ -2313,6 +2314,7 @@ function renderKpis() {
   elements.kpiReceivedThisMonth.textContent = String(receivedThisMonth);
   elements.kpiCompletedThisMonth.textContent = String(completedThisMonth);
 
+  logOperationalClosureKpiSnapshot(records, completedThisMonth);
   logAverageDaysToReceiveSummary(avgDaysToReceive);
   elements.kpiScopeSummary.textContent = buildFilterSummaryText();
 }
@@ -2381,7 +2383,7 @@ function logAverageDaysToReceiveSummary(summary) {
 function renderWorkUnitSummary() {
   const statusColumns = [...KPI_STATUS_ORDER];
   const records = state.scopedRecords;
-  const monthReference = new Date();
+  const monthReference = getSelectedMonthReferenceDate();
   const monthScopeRecords = getCurrentMonthMetricScopeRecords();
   const unitsInScope = state.selectedWorkUnit === ALL_WORK_UNITS_OPTION
     ? buildAvailableWorkUnits(records)
@@ -2473,6 +2475,7 @@ function renderTrendPanel() {
 function renderCommandAlerts() {
   const records = state.scopedRecords;
   const monthScopeRecords = getCurrentMonthMetricScopeRecords();
+  const monthReference = getSelectedMonthReferenceDate();
 
   const due10 = records.filter((record) => isDueInTenDays(record)).length;
   const due5 = records.filter((record) => isDueInFiveDays(record)).length;
@@ -2488,7 +2491,7 @@ function renderCommandAlerts() {
     if (!isOperationallyClosed(record)) {
       return false;
     }
-    return isWithinMonth(getOperationalClosedDate(record), new Date());
+    return isWithinMonth(getOperationalClosedDate(record), monthReference);
   }).length;
 
   elements.commandAlerts.innerHTML = `
@@ -3019,6 +3022,9 @@ function daysInProgress(record) {
 }
 
 function getCurrentMonthMetricScopeRecords() {
+  const periodRange = getTimePeriodRange(state.selectedTimePeriod);
+  const customRange = getCustomDateRange(state.customStartDate, state.customEndDate);
+
   return state.records.filter((record) => {
     if (state.selectedWorkUnit !== ALL_WORK_UNITS_OPTION && !recordHasWorkUnit(record, state.selectedWorkUnit)) {
       return false;
@@ -3026,7 +3032,33 @@ function getCurrentMonthMetricScopeRecords() {
     if (state.selectedStatus !== ALL_STATUSES_OPTION && !statusEquals(record.status, state.selectedStatus)) {
       return false;
     }
+    if (!recordMatchesDateRange(record, periodRange.start, periodRange.end)) {
+      return false;
+    }
+    if (!recordMatchesDateRange(record, customRange.start, customRange.end)) {
+      return false;
+    }
     return true;
+  });
+}
+
+function getSelectedMonthReferenceDate() {
+  const customRange = getCustomDateRange(state.customStartDate, state.customEndDate);
+  return customRange.end || customRange.start || today;
+}
+
+function logOperationalClosureKpiSnapshot(records, closedThisMonthTotal) {
+  const pendingWithLegalCount = records.filter((record) => isPendingWithLegal(record)).length;
+  const dciCompletedCount = records.filter((record) => isDciCompleted(record)).length;
+  const redactionsCompletedCount = records.filter((record) => isRedactionsCompleted(record)).length;
+  const totalOperationallyClosedCount = records.filter((record) => isOperationallyClosed(record)).length;
+
+  console.info("Operational closure KPI snapshot", {
+    pendingWithLegalCount,
+    dciCompletedCount,
+    redactionsCompletedCount,
+    totalOperationallyClosedCount,
+    closedThisMonthTotal
   });
 }
 
