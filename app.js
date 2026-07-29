@@ -2447,7 +2447,7 @@ function logAverageDaysToReceiveSummary(summary) {
 function renderWorkUnitSummary() {
   const statusColumns = [...KPI_STATUS_ORDER];
   const records = state.scopedRecords;
-  const monthReference = getSelectedMonthReferenceDate();
+  const monthReference = today;
   const monthScopeRecords = getCurrentMonthMetricScopeRecords();
   const unitsInScope = state.selectedWorkUnit === ALL_WORK_UNITS_OPTION
     ? buildAvailableWorkUnits(records)
