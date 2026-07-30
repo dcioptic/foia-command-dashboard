@@ -554,7 +554,15 @@ body.dark .filter-control input[type="date"] {
   padding: 0.3rem;
   display: grid;
   gap: 0.2rem;
-  z-index: 12;
+  z-index: 2147483647;
+}
+
+.export-menu.export-menu--floating {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: auto;
+  z-index: 2147483647;
 }
 
 body.dark .export-menu {

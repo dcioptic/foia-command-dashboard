@@ -218,6 +218,8 @@ const devWarningFlags = new Set();
 let initializationPromise = null;
 let dataLoadPromise = null;
 let exportStatusTimerId = 0;
+let exportMenuHomeParent = null;
+let exportMenuHomeNextSibling = null;
 
 initialize();
 
@@ -3397,12 +3399,26 @@ function setExportMenuOpen(open, options = {}) {
   }
 
   const shouldOpen = Boolean(open);
+
+   if (shouldOpen) {
+    moveExportMenuToBody();
+    elements.exportMenu.classList.add("export-menu--floating");
+  }
+
   elements.exportMenu.hidden = !shouldOpen;
   elements.exportMenuButton.setAttribute("aria-expanded", String(shouldOpen));
 
   if (!shouldOpen) {
+    window.removeEventListener("resize", positionFloatingExportMenu);
+    window.removeEventListener("scroll", positionFloatingExportMenu, true);
+    elements.exportMenu.classList.remove("export-menu--floating");
+    moveExportMenuBackHome();
     return;
   }
+
+  positionFloatingExportMenu();
+  window.addEventListener("resize", positionFloatingExportMenu);
+  window.addEventListener("scroll", positionFloatingExportMenu, true);
 
   const menuItems = getExportMenuItems();
   if (!menuItems.length) {
@@ -3412,6 +3428,67 @@ function setExportMenuOpen(open, options = {}) {
   if (options.focusFirst) {
     menuItems[0].focus();
   }
+}
+
+function moveExportMenuToBody() {
+  if (!elements.exportMenu || !elements.exportMenuButton) {
+    return;
+  }
+
+  if (!exportMenuHomeParent) {
+    exportMenuHomeParent = elements.exportMenu.parentElement;
+    exportMenuHomeNextSibling = elements.exportMenu.nextSibling;
+  }
+
+  if (elements.exportMenu.parentElement !== document.body) {
+    document.body.appendChild(elements.exportMenu);
+  }
+}
+
+function moveExportMenuBackHome() {
+  if (!elements.exportMenu || !exportMenuHomeParent) {
+    return;
+  }
+
+  if (elements.exportMenu.parentElement === exportMenuHomeParent) {
+    return;
+  }
+
+  if (exportMenuHomeNextSibling && exportMenuHomeNextSibling.parentNode === exportMenuHomeParent) {
+    exportMenuHomeParent.insertBefore(elements.exportMenu, exportMenuHomeNextSibling);
+    return;
+  }
+
+  exportMenuHomeParent.appendChild(elements.exportMenu);
+}
+
+function positionFloatingExportMenu() {
+  if (!elements.exportMenu || !elements.exportMenuButton || !isExportMenuOpen()) {
+    return;
+  }
+
+  const gap = 4;
+  const rect = elements.exportMenuButton.getBoundingClientRect();
+  const viewportWidth = document.documentElement.clientWidth;
+  const viewportHeight = window.innerHeight;
+
+  elements.exportMenu.style.left = "0px";
+  elements.exportMenu.style.top = "0px";
+
+  const menuWidth = elements.exportMenu.offsetWidth || 228;
+  const menuHeight = elements.exportMenu.offsetHeight || 0;
+
+  let left = rect.right - menuWidth;
+  left = Math.max(8, Math.min(left, viewportWidth - menuWidth - 8));
+
+  let top = rect.bottom + gap;
+  if (menuHeight > 0 && top + menuHeight > viewportHeight - 8) {
+    const aboveTop = rect.top - menuHeight - gap;
+    top = aboveTop >= 8 ? aboveTop : Math.max(8, viewportHeight - menuHeight - 8);
+  }
+
+  elements.exportMenu.style.left = `${Math.round(left)}px`;
+  elements.exportMenu.style.top = `${Math.round(top)}px`;
 }
 
 function handleExportMenuKeydown(event) {
