@@ -78,6 +78,34 @@ const SHAREPOINT_FOIA_LIST_NAME_FALLBACKS = ["DCI FOIA", "DCI FOIA TRACKER", "DC
 const AUTH_REDIRECT_PENDING_KEY = "authenticationRedirectPending";
 const GRAPH_RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const GRAPH_MAX_RETRIES = 2;
+const EXPORT_DATE_FORMAT = "mm/dd/yyyy";
+const EXPORT_MAX_SHEET_NAME_LENGTH = 31;
+const EXPORT_INVALID_SHEET_CHARS = /[\\/?*\[\]:]/g;
+const EXPORT_BASE_COLUMNS = [
+  { key: "foiaNumber", label: "FOIA Number", maxWidth: 20 },
+  { key: "subject", label: "Subject", maxWidth: 54 },
+  { key: "requester", label: "Requester", maxWidth: 28 },
+  { key: "workUnit", label: "DCI Work Unit", maxWidth: 34 },
+  { key: "status", label: "Exact Status", maxWidth: 30 },
+  { key: "dateReceived", label: "Date Received", type: "date", maxWidth: 14 },
+  { key: "dateDciReceived", label: "Date DCI Received", type: "date", maxWidth: 14 },
+  { key: "dueDate", label: "Due Date", type: "date", maxWidth: 14 },
+  { key: "dateClosed", label: "Date Closed", type: "date", maxWidth: 14 },
+  { key: "daysToComplete", label: "Days to Complete", maxWidth: 18 },
+  { key: "assignedTo", label: "Assigned To", maxWidth: 24 },
+  { key: "notes", label: "Notes", maxWidth: 58 }
+];
+const EXPORT_HEADER_STYLE = {
+  fill: { patternType: "solid", fgColor: { rgb: "0B2C4A" } },
+  font: { color: { rgb: "FFFFFF" }, bold: true },
+  border: {
+    bottom: { style: "medium", color: { rgb: "B38728" } }
+  },
+  alignment: { horizontal: "left", vertical: "center" }
+};
+const EXPORT_ALT_ROW_STYLE = {
+  fill: { patternType: "solid", fgColor: { rgb: "F4F7FB" } }
+};
 
 const state = {
   records: [],
@@ -168,6 +196,9 @@ const elements = {
   signOutButton: document.getElementById("signOutButton"),
   refreshNowButton: document.getElementById("refreshNowButton"),
   connectionStatusMessage: document.getElementById("connectionStatusMessage"),
+  exportMenuButton: document.getElementById("exportMenuButton"),
+  exportMenu: document.getElementById("exportMenu"),
+  exportStatusMessage: document.getElementById("exportStatusMessage"),
   diagAuthStatus: document.getElementById("diagAuthStatus"),
   diagSignedInUser: document.getElementById("diagSignedInUser"),
   diagSiteResolved: document.getElementById("diagSiteResolved"),
@@ -186,6 +217,7 @@ let analyticsSyncFrame = 0;
 const devWarningFlags = new Set();
 let initializationPromise = null;
 let dataLoadPromise = null;
+let exportStatusTimerId = 0;
 
 initialize();
 
@@ -296,6 +328,58 @@ function attachCoreEventListeners() {
   elements.signOutButton.addEventListener("click", async () => {
     await handleSignOutClick();
   });
+
+  if (elements.exportMenuButton && elements.exportMenu) {
+    elements.exportMenuButton.addEventListener("click", () => {
+      setExportMenuOpen(!isExportMenuOpen());
+    });
+
+    elements.exportMenuButton.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        setExportMenuOpen(true, { focusFirst: true });
+      }
+    });
+
+    elements.exportMenu.addEventListener("click", async (event) => {
+      const actionButton = event.target.closest(".export-menu-item");
+      if (!actionButton) {
+        return;
+      }
+
+      setExportMenuOpen(false);
+      await handleExportActionSelection(actionButton.getAttribute("data-export-action") || "");
+    });
+
+    elements.exportMenu.addEventListener("keydown", (event) => {
+      handleExportMenuKeydown(event);
+    });
+
+    document.addEventListener("click", (event) => {
+      if (!isExportMenuOpen()) {
+        return;
+      }
+
+      const target = event.target;
+      if (!(target instanceof Node)) {
+        return;
+      }
+
+      if (elements.exportMenu.contains(target) || elements.exportMenuButton.contains(target)) {
+        return;
+      }
+
+      setExportMenuOpen(false);
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && isExportMenuOpen()) {
+        event.preventDefault();
+        setExportMenuOpen(false);
+        elements.exportMenuButton.focus();
+      }
+    });
+  }
 
   window.addEventListener("resize", () => {
     requestSyncAnalyticsPanelHeights();
@@ -2274,46 +2358,67 @@ function renderAll() {
 }
 
 function renderKpis() {
-  const records = state.scopedRecords;
+  const snapshot = getKpiSnapshot();
 
+  elements.kpiStatusNew.textContent = String(snapshot.statusCounts[0]);
+  elements.kpiStatusInProgress.textContent = String(snapshot.statusCounts[1]);
+  elements.kpiStatusPendingRedactions.textContent = String(snapshot.pendingRedactionsCount);
+  elements.kpiAvgDaysToReceive.textContent = String(snapshot.avgDaysToReceive.averageDays);
+  elements.kpiStatusCompleted.textContent = String(snapshot.operationallyClosedCount);
+  elements.kpiDue10.textContent = String(snapshot.due10Count);
+  elements.kpiDue5.textContent = String(snapshot.due5Count);
+  elements.kpiDueToday.textContent = String(snapshot.dueTodayCount);
+  elements.kpiOverdue.textContent = String(snapshot.overdueCount);
+  elements.kpiAvgDaysInProgress.textContent = String(snapshot.avgDaysInProgress);
+  elements.kpiReceivedThisMonth.textContent = String(snapshot.receivedThisMonth);
+  elements.kpiCompletedThisMonth.textContent = String(snapshot.completedThisMonth);
+
+  logClosedThisMonthDiagnostics(snapshot.closedThisMonthScopeRecords, snapshot.completedThisMonth);
+  logAverageDaysToReceiveSummary(snapshot.avgDaysToReceive);
+  elements.kpiScopeSummary.textContent = buildFilterSummaryText();
+}
+
+function getKpiSnapshot(records = state.scopedRecords) {
   const statusCounts = KPI_STATUS_ORDER.map((statusLabel) => countByStatus(records, statusLabel));
   const operationallyClosedCount = records.filter((record) => isOperationallyClosed(record)).length;
   const pendingRedactionsCount = countPendingRedactions(records);
-  const inProgressRecords = records.filter((record) => isInProgressMetricEligible(record));
-  const dueToday = records.filter((record) => isDueToday(record));
-  const due5 = records.filter((record) => isDueInFiveDays(record));
-  const due10 = records.filter((record) => isDueInTenDays(record));
-  const overdue = records.filter((record) => isOverdue(record));
+  const dueTodayCount = records.filter((record) => isDueToday(record)).length;
+  const due5Count = records.filter((record) => isDueInFiveDays(record)).length;
+  const due10Count = records.filter((record) => isDueInTenDays(record)).length;
+  const overdueCount = records.filter((record) => isOverdue(record)).length;
   const avgDaysToReceive = calculateAverageDaysToReceive(records);
-
-  const inProgressDurations = inProgressRecords
-    .map((record) => daysInProgress(record))
-    .filter((days) => Number.isFinite(days));
-  const avgDaysInProgress = inProgressDurations.length
-    ? Math.round(inProgressDurations.reduce((sum, days) => sum + days, 0) / inProgressDurations.length)
-    : 0;
+  const avgDaysInProgress = calculateAverageDaysInProgress(records);
 
   const monthScopeRecords = getCurrentMonthMetricScopeRecords();
   const receivedThisMonth = monthScopeRecords.filter((record) => isWithinMonth(getIntakeDate(record), today)).length;
   const closedThisMonthScopeRecords = getClosedThisMonthScopeRecords();
   const completedThisMonth = countOperationallyClosedThisMonth(closedThisMonthScopeRecords);
 
-  elements.kpiStatusNew.textContent = String(statusCounts[0]);
-  elements.kpiStatusInProgress.textContent = String(statusCounts[1]);
-  elements.kpiStatusPendingRedactions.textContent = String(pendingRedactionsCount);
-  elements.kpiAvgDaysToReceive.textContent = String(avgDaysToReceive.averageDays);
-  elements.kpiStatusCompleted.textContent = String(operationallyClosedCount);
-  elements.kpiDue10.textContent = String(due10.length);
-  elements.kpiDue5.textContent = String(due5.length);
-  elements.kpiDueToday.textContent = String(dueToday.length);
-  elements.kpiOverdue.textContent = String(overdue.length);
-  elements.kpiAvgDaysInProgress.textContent = String(avgDaysInProgress);
-  elements.kpiReceivedThisMonth.textContent = String(receivedThisMonth);
-  elements.kpiCompletedThisMonth.textContent = String(completedThisMonth);
+  return {
+    statusCounts,
+    operationallyClosedCount,
+    pendingRedactionsCount,
+    dueTodayCount,
+    due5Count,
+    due10Count,
+    overdueCount,
+    avgDaysToReceive,
+    avgDaysInProgress,
+    receivedThisMonth,
+    completedThisMonth,
+    closedThisMonthScopeRecords
+  };
+}
 
-  logClosedThisMonthDiagnostics(closedThisMonthScopeRecords, completedThisMonth);
-  logAverageDaysToReceiveSummary(avgDaysToReceive);
-  elements.kpiScopeSummary.textContent = buildFilterSummaryText();
+function calculateAverageDaysInProgress(records) {
+  const inProgressRecords = records.filter((record) => isInProgressMetricEligible(record));
+  const inProgressDurations = inProgressRecords
+    .map((record) => daysInProgress(record))
+    .filter((days) => Number.isFinite(days));
+
+  return inProgressDurations.length
+    ? Math.round(inProgressDurations.reduce((sum, days) => sum + days, 0) / inProgressDurations.length)
+    : 0;
 }
 
 function calculateAverageDaysToReceive(records) {
@@ -2378,7 +2483,6 @@ function logAverageDaysToReceiveSummary(summary) {
 }
 
 function renderWorkUnitSummary() {
-  const statusColumns = [...KPI_STATUS_ORDER];
   const records = state.scopedRecords;
   const monthReference = getSelectedMonthReferenceDate();
   const monthScopeRecords = getCurrentMonthMetricScopeRecords();
@@ -2386,18 +2490,51 @@ function renderWorkUnitSummary() {
     ? buildAvailableWorkUnits(records)
     : [state.selectedWorkUnit];
 
-  const rows = unitsInScope
+  const rows = buildWorkUnitSummaryRows({
+    records,
+    monthScopeRecords,
+    monthReference,
+    unitsInScope
+  });
+
+  if (!rows.length) {
+    elements.workUnitSummaryBody.innerHTML = "<tr><td colspan=\"14\">No DCI work unit workload data available.</td></tr>";
+    return;
+  }
+
+  elements.workUnitSummaryBody.innerHTML = rows.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.workUnit)}</td>
+      <td title="1. NEW">${item.statusCounts[0]}</td>
+      <td title="2. IN PROGRESS">${item.statusCounts[1]}</td>
+      <td title="Pending Redactions">${item.pendingRedactionsCount}</td>
+      <td title="4. WORK UNIT RESPONDED">${item.statusCounts[3]}</td>
+      <td title="Operationally Closed">${item.closedTotal}</td>
+      <td>${item.due10}</td>
+      <td>${item.due5}</td>
+      <td>${item.dueToday}</td>
+      <td>${item.overdue}</td>
+      <td>${item.avgDays}</td>
+      <td>${item.receivedThisMonth}</td>
+      <td>${item.completedThisMonth}</td>
+      <td>${item.total}</td>
+    </tr>
+  `).join("");
+}
+
+function buildWorkUnitSummaryRows({ records, monthScopeRecords, monthReference, unitsInScope }) {
+  const statusColumns = [...KPI_STATUS_ORDER];
+
+  return unitsInScope
     .map((workUnit) => {
       const unitRecords = records.filter((record) => recordHasWorkUnit(record, workUnit));
       const statusCounts = statusColumns.map((status) => unitRecords.filter((record) => statusEquals(record.status, status)).length);
       const pendingRedactionsCount = countPendingRedactions(unitRecords);
-      const inProgressRecords = unitRecords.filter((record) => isInProgressMetricEligible(record));
       const due10 = unitRecords.filter((record) => isDueInTenDays(record)).length;
       const due5 = unitRecords.filter((record) => isDueInFiveDays(record)).length;
       const dueToday = unitRecords.filter((record) => isDueToday(record)).length;
       const overdue = unitRecords.filter((record) => isOverdue(record)).length;
-      const durations = inProgressRecords.map((record) => daysInProgress(record)).filter((days) => Number.isFinite(days));
-      const avgDays = durations.length ? Math.round(durations.reduce((sum, days) => sum + days, 0) / durations.length) : 0;
+      const avgDays = calculateAverageDaysInProgress(unitRecords);
 
       const monthUnitScope = monthScopeRecords.filter((record) => recordHasWorkUnit(record, workUnit));
       const receivedThisMonth = monthUnitScope.filter((record) => isWithinMonth(getIntakeDate(record), monthReference)).length;
@@ -2427,30 +2564,6 @@ function renderWorkUnitSummary() {
     })
     .filter((row) => row.total > 0)
     .sort((a, b) => b.total - a.total || a.workUnit.localeCompare(b.workUnit));
-
-  if (!rows.length) {
-    elements.workUnitSummaryBody.innerHTML = "<tr><td colspan=\"14\">No DCI work unit workload data available.</td></tr>";
-    return;
-  }
-
-  elements.workUnitSummaryBody.innerHTML = rows.map((item) => `
-    <tr>
-      <td>${escapeHtml(item.workUnit)}</td>
-      <td title="1. NEW">${item.statusCounts[0]}</td>
-      <td title="2. IN PROGRESS">${item.statusCounts[1]}</td>
-      <td title="Pending Redactions">${item.pendingRedactionsCount}</td>
-      <td title="4. WORK UNIT RESPONDED">${item.statusCounts[3]}</td>
-      <td title="Operationally Closed">${item.closedTotal}</td>
-      <td>${item.due10}</td>
-      <td>${item.due5}</td>
-      <td>${item.dueToday}</td>
-      <td>${item.overdue}</td>
-      <td>${item.avgDays}</td>
-      <td>${item.receivedThisMonth}</td>
-      <td>${item.completedThisMonth}</td>
-      <td>${item.total}</td>
-    </tr>
-  `).join("");
 }
 
 function renderTrendPanel() {
@@ -3265,6 +3378,563 @@ function logOperationalClosureValidationSummary(records) {
     finalUpcomingDeadlinesCount: finalUpcomingCount,
     finalOverdueCount
   });
+}
+
+function isExportMenuOpen() {
+  return Boolean(elements.exportMenu && !elements.exportMenu.hidden);
+}
+
+function getExportMenuItems() {
+  if (!elements.exportMenu) {
+    return [];
+  }
+  return Array.from(elements.exportMenu.querySelectorAll(".export-menu-item"));
+}
+
+function setExportMenuOpen(open, options = {}) {
+  if (!elements.exportMenu || !elements.exportMenuButton) {
+    return;
+  }
+
+  const shouldOpen = Boolean(open);
+  elements.exportMenu.hidden = !shouldOpen;
+  elements.exportMenuButton.setAttribute("aria-expanded", String(shouldOpen));
+
+  if (!shouldOpen) {
+    return;
+  }
+
+  const menuItems = getExportMenuItems();
+  if (!menuItems.length) {
+    return;
+  }
+
+  if (options.focusFirst) {
+    menuItems[0].focus();
+  }
+}
+
+function handleExportMenuKeydown(event) {
+  const menuItems = getExportMenuItems();
+  if (!menuItems.length) {
+    return;
+  }
+
+  const currentIndex = menuItems.indexOf(document.activeElement);
+
+  if (event.key === "Escape") {
+    event.preventDefault();
+    setExportMenuOpen(false);
+    elements.exportMenuButton.focus();
+    return;
+  }
+
+  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+    return;
+  }
+
+  event.preventDefault();
+
+  if (event.key === "Home") {
+    menuItems[0].focus();
+    return;
+  }
+
+  if (event.key === "End") {
+    menuItems[menuItems.length - 1].focus();
+    return;
+  }
+
+  const offset = event.key === "ArrowDown" ? 1 : -1;
+  const nextIndex = currentIndex < 0
+    ? 0
+    : (currentIndex + offset + menuItems.length) % menuItems.length;
+  menuItems[nextIndex].focus();
+}
+
+async function handleExportActionSelection(action) {
+  const selectedAction = String(action || "").trim();
+  if (!selectedAction) {
+    return;
+  }
+
+  try {
+    let result = null;
+
+    if (selectedAction === "current") {
+      result = exportCurrentView();
+    } else if (selectedAction === "all") {
+      result = exportAllRequests();
+    } else if (selectedAction === "work-unit") {
+      result = exportByWorkUnit();
+    } else if (selectedAction === "executive") {
+      result = exportExecutiveSummary();
+    }
+
+    if (!result) {
+      throw new Error("Unsupported export action.");
+    }
+
+    showExportStatus(`Export complete: ${result.filename}`, "success");
+  } catch (error) {
+    console.error("Export generation failed.", error);
+    showExportStatus(`Export failed: ${extractErrorMessage(error)}`, "error");
+  }
+}
+
+function showExportStatus(message, type) {
+  if (!elements.exportStatusMessage) {
+    return;
+  }
+
+  if (exportStatusTimerId) {
+    window.clearTimeout(exportStatusTimerId);
+    exportStatusTimerId = 0;
+  }
+
+  elements.exportStatusMessage.hidden = false;
+  elements.exportStatusMessage.textContent = message;
+  elements.exportStatusMessage.classList.remove("success", "error");
+  if (type === "success" || type === "error") {
+    elements.exportStatusMessage.classList.add(type);
+  }
+
+  exportStatusTimerId = window.setTimeout(() => {
+    elements.exportStatusMessage.hidden = true;
+    elements.exportStatusMessage.textContent = "";
+    elements.exportStatusMessage.classList.remove("success", "error");
+    exportStatusTimerId = 0;
+  }, 5000);
+}
+
+function ensureXlsxLoaded() {
+  if (!window.XLSX || !window.XLSX.utils) {
+    throw new Error("Excel export library is unavailable. Refresh the page and try again.");
+  }
+}
+
+function formatExportDate(value) {
+  if (!value) {
+    return "";
+  }
+
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return startOfDay(value);
+  }
+
+  return parseDate(value);
+}
+
+function sanitizeWorksheetName(name, usedNames = new Set()) {
+  const baseName = String(name || "Sheet")
+    .replace(EXPORT_INVALID_SHEET_CHARS, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^'+|'+$/g, "") || "Sheet";
+
+  let candidate = baseName.slice(0, EXPORT_MAX_SHEET_NAME_LENGTH) || "Sheet";
+  let suffix = 1;
+
+  while (usedNames.has(candidate.toLowerCase())) {
+    suffix += 1;
+    const suffixText = ` (${suffix})`;
+    const allowedBaseLength = Math.max(1, EXPORT_MAX_SHEET_NAME_LENGTH - suffixText.length);
+    candidate = `${baseName.slice(0, allowedBaseLength)}${suffixText}`;
+  }
+
+  usedNames.add(candidate.toLowerCase());
+  return candidate;
+}
+
+function sanitizeFilenameSegment(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[<>:"/\\|?*]+/g, "")
+    .replace(/\s+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function getExportDateStamp() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getDaysToCompleteForExport(record) {
+  const value = isOperationallyClosed(record)
+    ? daysToOperationalMilestone(record)
+    : daysInProgress(record);
+
+  return Number.isFinite(value) ? value : "";
+}
+
+function getExportRows(records) {
+  return records.map((record) => ({
+    foiaNumber: String(record.request_id || "").trim(),
+    subject: String(record.subject || "").trim(),
+    requester: String(record.requester || "").trim(),
+    workUnit: getWorkUnitDisplay(record),
+    status: String(record.status || "").trim(),
+    dateReceived: formatExportDate(record.date_stamped || record.created_date),
+    dateDciReceived: formatExportDate(record.received_date),
+    dueDate: formatExportDate(record.due_date),
+    dateClosed: formatExportDate(getOperationalCloseDate(record) || record.closed_date),
+    daysToComplete: getDaysToCompleteForExport(record),
+    assignedTo: String(record.assigned_to || "").trim(),
+    notes: String(record.notes || "").trim()
+  }));
+}
+
+function createWorksheetFromRows(rows, columns, worksheetName, usedSheetNames = new Set()) {
+  ensureXlsxLoaded();
+
+  const headers = columns.map((column) => column.label);
+  const bodyRows = rows.map((row) => columns.map((column) => row[column.key] ?? ""));
+  const worksheet = window.XLSX.utils.aoa_to_sheet([headers, ...bodyRows]);
+  applyWorksheetFormatting(worksheet, rows, columns);
+
+  return {
+    worksheet,
+    worksheetName: sanitizeWorksheetName(worksheetName, usedSheetNames)
+  };
+}
+
+function createDataWorksheet(records, worksheetName, usedSheetNames = new Set()) {
+  const rows = getExportRows(records);
+  return createWorksheetFromRows(rows, EXPORT_BASE_COLUMNS, worksheetName, usedSheetNames);
+}
+
+function estimateCellWidth(value) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return 12;
+  }
+  const text = String(value ?? "").trim();
+  return Math.max(4, text.length + 2);
+}
+
+function applyWorksheetFormatting(worksheet, rows, columns) {
+  if (!worksheet["!ref"]) {
+    return;
+  }
+
+  const range = window.XLSX.utils.decode_range(worksheet["!ref"]);
+  const totalRows = rows.length + 1;
+
+  worksheet["!autofilter"] = {
+    ref: window.XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: totalRows - 1, c: columns.length - 1 } })
+  };
+
+  worksheet["!freeze"] = {
+    xSplit: 0,
+    ySplit: 1,
+    topLeftCell: "A2",
+    activePane: "bottomLeft",
+    state: "frozen"
+  };
+
+  worksheet["!cols"] = columns.map((column) => {
+    const contentWidths = rows.map((row) => estimateCellWidth(row[column.key]));
+    const maxContentWidth = Math.max(estimateCellWidth(column.label), ...contentWidths);
+    const boundedWidth = Math.min(column.maxWidth || 40, maxContentWidth);
+    return { wch: Math.max(10, boundedWidth) };
+  });
+
+  for (let c = range.s.c; c <= range.e.c; c += 1) {
+    const headerRef = window.XLSX.utils.encode_cell({ r: 0, c });
+    const headerCell = worksheet[headerRef];
+    if (headerCell) {
+      headerCell.s = { ...(headerCell.s || {}), ...EXPORT_HEADER_STYLE };
+    }
+  }
+
+  rows.forEach((_, rowIndex) => {
+    const sheetRow = rowIndex + 1;
+    const isAltRow = rowIndex % 2 === 1;
+
+    columns.forEach((column, columnIndex) => {
+      const cellRef = window.XLSX.utils.encode_cell({ r: sheetRow, c: columnIndex });
+      const cell = worksheet[cellRef];
+      if (!cell) {
+        return;
+      }
+
+      if (column.type === "date" && cell.v) {
+        cell.z = EXPORT_DATE_FORMAT;
+      }
+
+      if (isAltRow) {
+        cell.s = { ...(cell.s || {}), ...EXPORT_ALT_ROW_STYLE };
+      }
+    });
+  });
+}
+
+function downloadWorkbook(workbook, filename) {
+  ensureXlsxLoaded();
+  window.XLSX.writeFile(workbook, filename, { compression: true });
+}
+
+function getActiveWorkUnitFilenameLabel() {
+  if (state.tableSelectedWorkUnit && state.tableSelectedWorkUnit !== ALL_WORK_UNITS_OPTION) {
+    return state.tableSelectedWorkUnit;
+  }
+  if (state.selectedWorkUnit && state.selectedWorkUnit !== ALL_WORK_UNITS_OPTION) {
+    return state.selectedWorkUnit;
+  }
+  return "";
+}
+
+function exportCurrentView() {
+  const dateStamp = getExportDateStamp();
+  const workbook = window.XLSX.utils.book_new();
+  const usedSheetNames = new Set();
+  const { worksheet, worksheetName } = createDataWorksheet(state.filteredRecords, "Filtered Requests", usedSheetNames);
+
+  window.XLSX.utils.book_append_sheet(workbook, worksheet, worksheetName);
+
+  const workUnitLabel = sanitizeFilenameSegment(getActiveWorkUnitFilenameLabel());
+  const suffix = workUnitLabel ? `_${workUnitLabel}` : "";
+  const filename = `DCI_FOIA_Filtered_View_${dateStamp}${suffix}.xlsx`;
+  downloadWorkbook(workbook, filename);
+
+  return {
+    filename,
+    recordsExported: state.filteredRecords.length
+  };
+}
+
+function exportAllRequests() {
+  const dateStamp = getExportDateStamp();
+  const workbook = window.XLSX.utils.book_new();
+  const usedSheetNames = new Set();
+  const { worksheet, worksheetName } = createDataWorksheet(state.records, "All Requests", usedSheetNames);
+
+  window.XLSX.utils.book_append_sheet(workbook, worksheet, worksheetName);
+
+  const filename = `DCI_FOIA_All_Requests_${dateStamp}.xlsx`;
+  downloadWorkbook(workbook, filename);
+
+  return {
+    filename,
+    recordsExported: state.records.length
+  };
+}
+
+function buildWorkUnitAssignmentMap(records) {
+  const map = new Map();
+  const unassignedLabel = "Unassigned";
+
+  const addToGroup = (key, record) => {
+    if (!map.has(key)) {
+      map.set(key, []);
+    }
+    map.get(key).push(record);
+  };
+
+  records.forEach((record) => {
+    const knownUnits = getWorkUnits(record)
+      .map((unit) => String(unit || "").trim())
+      .filter((unit) => unit && normalizeWorkUnitKey(unit) !== "unknown");
+
+    if (!knownUnits.length) {
+      addToGroup(unassignedLabel, record);
+      return;
+    }
+
+    knownUnits.forEach((unit) => addToGroup(unit, record));
+  });
+
+  if (!map.has(unassignedLabel)) {
+    map.set(unassignedLabel, []);
+  }
+
+  return map;
+}
+
+function buildWorkUnitExportSummaryRows(workUnitAssignmentMap) {
+  const unassignedLabel = "Unassigned";
+  const keys = Array.from(workUnitAssignmentMap.keys());
+  const orderedKnownKeys = orderWorkUnits(keys.filter((key) => key !== unassignedLabel));
+  const orderedKeys = [...orderedKnownKeys, unassignedLabel];
+
+  return orderedKeys.map((workUnit) => {
+    const unitRecords = workUnitAssignmentMap.get(workUnit) || [];
+    const closedCount = unitRecords.filter((record) => isOperationallyClosed(record)).length;
+    const openCount = unitRecords.length - closedCount;
+    const overdueCount = unitRecords.filter((record) => isOverdue(record)).length;
+    const pendingRedactionsCount = countPendingRedactions(unitRecords);
+    const avgDaysToReceive = calculateAverageDaysToReceive(unitRecords).averageDays;
+    const avgDaysInProgress = calculateAverageDaysInProgress(unitRecords);
+
+    return {
+      workUnit,
+      totalRequests: unitRecords.length,
+      openRequests: openCount,
+      closedRequests: closedCount,
+      overdueRequests: overdueCount,
+      pendingRedactions: pendingRedactionsCount,
+      averageDaysToReceive: avgDaysToReceive,
+      averageDaysInProgress: avgDaysInProgress
+    };
+  });
+}
+
+function exportByWorkUnit() {
+  const dateStamp = getExportDateStamp();
+  const workbook = window.XLSX.utils.book_new();
+  const usedSheetNames = new Set();
+  const workUnitAssignmentMap = buildWorkUnitAssignmentMap(state.records);
+  const summaryRows = buildWorkUnitExportSummaryRows(workUnitAssignmentMap);
+
+  const summaryColumns = [
+    { key: "workUnit", label: "Work Unit", maxWidth: 34 },
+    { key: "totalRequests", label: "Total Requests", maxWidth: 16 },
+    { key: "openRequests", label: "Open Requests", maxWidth: 16 },
+    { key: "closedRequests", label: "Closed Requests", maxWidth: 16 },
+    { key: "overdueRequests", label: "Overdue Requests", maxWidth: 16 },
+    { key: "pendingRedactions", label: "Pending Redactions", maxWidth: 18 },
+    { key: "averageDaysToReceive", label: "Average Days to Receive", maxWidth: 24 },
+    { key: "averageDaysInProgress", label: "Average Days in Progress", maxWidth: 24 }
+  ];
+
+  const summarySheet = createWorksheetFromRows(summaryRows, summaryColumns, "Summary", usedSheetNames);
+  window.XLSX.utils.book_append_sheet(workbook, summarySheet.worksheet, summarySheet.worksheetName);
+
+  const unassignedLabel = "Unassigned";
+  const knownUnits = orderWorkUnits(Array.from(workUnitAssignmentMap.keys()).filter((key) => key !== unassignedLabel));
+  const orderedUnits = [...knownUnits, unassignedLabel];
+
+  orderedUnits.forEach((workUnit) => {
+    const unitRecords = workUnitAssignmentMap.get(workUnit) || [];
+    const sheetName = workUnit === unassignedLabel ? "Unassigned" : workUnit;
+    const { worksheet, worksheetName } = createDataWorksheet(unitRecords, sheetName, usedSheetNames);
+    window.XLSX.utils.book_append_sheet(workbook, worksheet, worksheetName);
+  });
+
+  const filename = `DCI_FOIA_By_Work_Unit_${dateStamp}.xlsx`;
+  downloadWorkbook(workbook, filename);
+
+  return {
+    filename,
+    workUnitSheetCount: orderedUnits.length
+  };
+}
+
+function exportExecutiveSummary() {
+  const dateStamp = getExportDateStamp();
+  const workbook = window.XLSX.utils.book_new();
+  const usedSheetNames = new Set();
+  const kpiSnapshot = getKpiSnapshot();
+
+  const executiveRows = [
+    { metric: "Report Title", value: "Division of Criminal Investigation FOIA Command Dashboard" },
+    { metric: "Export Date and Time", value: new Date().toLocaleString("en-US") },
+    { metric: "Active Dashboard Filter", value: buildFilterSummaryText() },
+    { metric: "1. NEW", value: kpiSnapshot.statusCounts[0] },
+    { metric: "2. IN PROGRESS", value: kpiSnapshot.statusCounts[1] },
+    { metric: "Pending Redactions", value: kpiSnapshot.pendingRedactionsCount },
+    { metric: "DCI Completed", value: kpiSnapshot.operationallyClosedCount },
+    { metric: "Due in 10 Days", value: kpiSnapshot.due10Count },
+    { metric: "Due in 5 Days", value: kpiSnapshot.due5Count },
+    { metric: "Due Today", value: kpiSnapshot.dueTodayCount },
+    { metric: "Overdue", value: kpiSnapshot.overdueCount },
+    { metric: "Average Days to Receive", value: kpiSnapshot.avgDaysToReceive.averageDays },
+    { metric: "Average Days in Progress", value: kpiSnapshot.avgDaysInProgress },
+    { metric: "Opened This Month", value: kpiSnapshot.receivedThisMonth },
+    { metric: "Closed This Month", value: kpiSnapshot.completedThisMonth }
+  ];
+
+  const executiveColumns = [
+    { key: "metric", label: "Metric", maxWidth: 36 },
+    { key: "value", label: "Value", maxWidth: 72 }
+  ];
+
+  const executiveSheet = createWorksheetFromRows(executiveRows, executiveColumns, "Executive Summary", usedSheetNames);
+  window.XLSX.utils.book_append_sheet(workbook, executiveSheet.worksheet, executiveSheet.worksheetName);
+
+  const monthReference = getSelectedMonthReferenceDate();
+  const monthScopeRecords = getCurrentMonthMetricScopeRecords();
+  const unitsInScope = state.selectedWorkUnit === ALL_WORK_UNITS_OPTION
+    ? buildAvailableWorkUnits(state.scopedRecords)
+    : [state.selectedWorkUnit];
+  const workUnitRows = buildWorkUnitSummaryRows({
+    records: state.scopedRecords,
+    monthScopeRecords,
+    monthReference,
+    unitsInScope
+  }).map((row) => ({
+    workUnit: row.workUnit,
+    newCount: row.statusCounts[0],
+    inProgressCount: row.statusCounts[1],
+    pendingRedactions: row.pendingRedactionsCount,
+    unitResponded: row.statusCounts[3],
+    completed: row.closedTotal,
+    due10: row.due10,
+    due5: row.due5,
+    dueToday: row.dueToday,
+    overdue: row.overdue,
+    avgDays: row.avgDays,
+    openedThisMonth: row.receivedThisMonth,
+    closedThisMonth: row.completedThisMonth,
+    total: row.total
+  }));
+
+  const workUnitColumns = [
+    { key: "workUnit", label: "DCI Work Unit", maxWidth: 34 },
+    { key: "newCount", label: "New", maxWidth: 12 },
+    { key: "inProgressCount", label: "In Progress", maxWidth: 14 },
+    { key: "pendingRedactions", label: "Pending Redactions", maxWidth: 18 },
+    { key: "unitResponded", label: "Unit Responded", maxWidth: 15 },
+    { key: "completed", label: "Completed", maxWidth: 12 },
+    { key: "due10", label: "Due 10", maxWidth: 10 },
+    { key: "due5", label: "Due 5", maxWidth: 10 },
+    { key: "dueToday", label: "Due Today", maxWidth: 12 },
+    { key: "overdue", label: "Overdue", maxWidth: 10 },
+    { key: "avgDays", label: "Avg Days", maxWidth: 12 },
+    { key: "openedThisMonth", label: "Opened This Month", maxWidth: 18 },
+    { key: "closedThisMonth", label: "Closed This Month", maxWidth: 18 },
+    { key: "total", label: "Total", maxWidth: 10 }
+  ];
+
+  const workUnitSheet = createWorksheetFromRows(workUnitRows, workUnitColumns, "Work Unit Summary", usedSheetNames);
+  window.XLSX.utils.book_append_sheet(workbook, workUnitSheet.worksheet, workUnitSheet.worksheetName);
+
+  const trendRows = buildTrendRows().map((row) => ({
+    period: row.label,
+    opened: row.received,
+    closed: row.completed
+  }));
+  const trendColumns = [
+    { key: "period", label: "Period", maxWidth: 16 },
+    { key: "opened", label: "Opened", maxWidth: 12 },
+    { key: "closed", label: "Closed", maxWidth: 12 }
+  ];
+  const trendSheet = createWorksheetFromRows(trendRows, trendColumns, "Opened vs Closed", usedSheetNames);
+  window.XLSX.utils.book_append_sheet(workbook, trendSheet.worksheet, trendSheet.worksheetName);
+
+  const overdueRecords = state.scopedRecords.filter((record) => isOverdue(record));
+  const overdueSheet = createDataWorksheet(overdueRecords, "Overdue Requests", usedSheetNames);
+  window.XLSX.utils.book_append_sheet(workbook, overdueSheet.worksheet, overdueSheet.worksheetName);
+
+  const upcomingRecords = state.scopedRecords
+    .filter((record) => isDeadlineEligible(record))
+    .map((record) => ({
+      ...record,
+      _dueInDays: daysUntil(record.due_date)
+    }))
+    .sort((a, b) => a._dueInDays - b._dueInDays);
+  const upcomingSheet = createDataWorksheet(upcomingRecords, "Upcoming Deadlines", usedSheetNames);
+  window.XLSX.utils.book_append_sheet(workbook, upcomingSheet.worksheet, upcomingSheet.worksheetName);
+
+  const pendingRedactionsRecords = state.scopedRecords.filter((record) => isPendingRedactions(record));
+  const pendingRedactionsSheet = createDataWorksheet(pendingRedactionsRecords, "Pending Redactions", usedSheetNames);
+  window.XLSX.utils.book_append_sheet(workbook, pendingRedactionsSheet.worksheet, pendingRedactionsSheet.worksheetName);
+
+  const filename = `DCI_FOIA_Executive_Summary_${dateStamp}.xlsx`;
+  downloadWorkbook(workbook, filename);
+
+  return {
+    filename,
+    worksheetCount: 6
+  };
 }
 
 function escapeHtml(value) {

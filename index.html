@@ -112,8 +112,28 @@
           <div id="connectionStatusMessage" class="connection-status" role="status" aria-live="polite">Awaiting live SharePoint connection.</div>
           <div class="connection-toolbar">
             <button id="refreshNowButton" class="btn btn-refresh" type="button" aria-label="Refresh SharePoint data now">Refresh Now</button>
+            <div class="export-control">
+              <button
+                id="exportMenuButton"
+                class="btn btn-refresh export-menu-button"
+                type="button"
+                aria-label="Export dashboard data"
+                aria-haspopup="menu"
+                aria-expanded="false"
+                aria-controls="exportMenu"
+              >
+                Export
+              </button>
+              <div id="exportMenu" class="export-menu" role="menu" aria-label="Export options" hidden>
+                <button type="button" role="menuitem" class="export-menu-item" data-export-action="current">Export Current View</button>
+                <button type="button" role="menuitem" class="export-menu-item" data-export-action="all">Export All Requests</button>
+                <button type="button" role="menuitem" class="export-menu-item" data-export-action="work-unit">Export by Work Unit</button>
+                <button type="button" role="menuitem" class="export-menu-item" data-export-action="executive">Export Executive Summary</button>
+              </div>
+            </div>
             <span class="last-updated">Last Updated: <strong id="lastUpdatedValue">Never</strong></span>
           </div>
+          <div id="exportStatusMessage" class="export-status" role="status" aria-live="polite" hidden></div>
         </section>
 
         <section class="kpi-grid" aria-label="Key performance indicators">
@@ -325,6 +345,7 @@
   </div>
 
   <script src="vendor/msal-browser.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <script src="graph-config.js"></script>
   <script src="app.js"></script>
 </body>
