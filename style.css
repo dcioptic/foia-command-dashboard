@@ -480,6 +480,10 @@ body.dark .filter-control input[type="date"] {
 
 .kpi-scope-summary {
   grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
   padding: 0.48rem 0.75rem;
   border: 1px solid var(--panel-border);
   border-radius: 12px;
@@ -488,6 +492,23 @@ body.dark .filter-control input[type="date"] {
   font-size: 0.74rem;
   font-weight: 700;
   letter-spacing: 0.03em;
+}
+
+.total-foia-requests {
+  flex: 0 0 auto;
+  padding: 0.24rem 0.48rem;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #ffffff;
+  font-size: 0.67rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.total-foia-requests strong {
+  color: var(--brand-gold);
+  font-family: "IBM Plex Mono", monospace;
 }
 
 .connection-status {
@@ -1369,6 +1390,11 @@ body.dark .search-box input {
 }
 
 @media (max-width: 720px) {
+  .kpi-scope-summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .requests-row {
     grid-template-columns: 1fr;
   }

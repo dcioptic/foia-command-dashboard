@@ -113,6 +113,7 @@ const state = {
   baseFilteredRecords: [],
   scopedRecords: [],
   filteredRecords: [],
+  filteredRequestCount: 0,
   selectedId: null,
   tableSelectedWorkUnit: ALL_WORK_UNITS_OPTION,
   tableSelectedStatus: ALL_STATUSES_OPTION,
@@ -173,6 +174,7 @@ const elements = {
   kpiReceivedThisMonth: document.getElementById("kpiReceivedThisMonth"),
   kpiCompletedThisMonth: document.getElementById("kpiCompletedThisMonth"),
   kpiScopeSummary: document.getElementById("kpiScopeSummary"),
+  totalFoiaRequests: document.getElementById("totalFoiaRequests"),
   workUnitSummaryBody: document.getElementById("workUnitSummaryBody"),
   trendTableBody: document.getElementById("trendTableBody"),
   receivedCompletedPanel: document.getElementById("receivedCompletedPanel"),
@@ -1898,6 +1900,7 @@ function clearDashboardData(options = {}) {
   state.baseFilteredRecords = [];
   state.scopedRecords = [];
   state.filteredRecords = [];
+  state.filteredRequestCount = 0;
   state.selectedId = null;
   state.tableAvailableWorkUnits = [];
   state.tableAvailableStatuses = [];
@@ -2316,6 +2319,7 @@ function applyFilters() {
 
     return searchable.includes(normalizedQuery);
   });
+  state.filteredRequestCount = searchedRecords.length;
 
   populateTableLocalFilters(searchedRecords);
 
@@ -2378,6 +2382,7 @@ function renderKpis() {
   logClosedThisMonthDiagnostics(snapshot.closedThisMonthScopeRecords, snapshot.completedThisMonth);
   logAverageDaysToReceiveSummary(snapshot.avgDaysToReceive);
   elements.kpiScopeSummary.textContent = buildFilterSummaryText();
+  elements.totalFoiaRequests.textContent = state.filteredRequestCount.toLocaleString("en-US");
 }
 
 function getKpiSnapshot(records = state.scopedRecords) {
