@@ -2933,6 +2933,9 @@ function getProgressStartDate(record) {
 }
 
 function getRecordTimeFilterDate(record) {
+  if (normalizeStatus(record?.status) === "new") {
+    return record?.received_date || null;
+  }
   if (isOperationallyClosed(record)) {
     return getOperationalCloseDate(record);
   }
@@ -2972,9 +2975,10 @@ function getTimePeriodRange(period) {
 
 function getCustomDateRange(startValue, endValue) {
   const start = parseDate(startValue);
-  const end = parseDate(endValue);
-  if (start && end && start > end) {
-    return { start: end, end: start };
+  const endDate = parseDate(endValue);
+  const end = endOfDay(endDate);
+  if (start && endDate && start > endDate) {
+    return { start: endDate, end: endOfDay(start) };
   }
   return { start, end };
 }
@@ -3284,6 +3288,15 @@ function startOfDay(date) {
   }
   const copy = new Date(date);
   copy.setHours(0, 0, 0, 0);
+  return copy;
+}
+
+function endOfDay(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
+  const copy = new Date(date);
+  copy.setHours(23, 59, 59, 999);
   return copy;
 }
 
